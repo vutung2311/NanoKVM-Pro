@@ -4,11 +4,13 @@ import (
 	"NanoKVM-Server/proto"
 	"NanoKVM-Server/utils"
 	"bytes"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,7 +18,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const WiFiScript = "/kvmcomm/scripts/wifi.sh"
+const (
+	WiFiScript     = "/kvmcomm/scripts/wifi.sh"
+	WiFiApPassFile = "/tmp/ap.pass"
+)
 
 func (s *Service) GetWifi(c *gin.Context) {
 	var rsp proto.Response
@@ -63,6 +68,15 @@ func (s *Service) ConnectWifiNoAuth(c *gin.Context) {
 		return
 	}
 
+	// Verify AP Password
+	apKey := c.GetHeader("X-AP-Key")
+	expectedPass := getApPassword()
+	if apKey == "" || expectedPass == "" || subtle.ConstantTimeCompare([]byte(apKey), []byte(expectedPass)) != 1 {
+		time.Sleep(2 * time.Second)
+		rsp.ErrRsp(c, -4, "unauthorized")
+		return
+	}
+
 	if err := proto.ParseFormRequest(c, &req); err != nil {
 		rsp.ErrRsp(c, -2, "invalid parameters")
 		return
@@ -77,6 +91,26 @@ func (s *Service) ConnectWifiNoAuth(c *gin.Context) {
 
 	rsp.OkRsp(c)
 	log.Debugf("connect wifi successfully")
+}
+
+func (s *Service) VerifyApLogin(c *gin.Context) {
+	var rsp proto.Response
+
+	if !isAPMode() {
+		time.Sleep(2 * time.Second)
+		rsp.ErrRsp(c, -1, "invalid mode")
+		return
+	}
+
+	apKey := c.GetHeader("X-AP-Key")
+	expectedPass := getApPassword()
+	if apKey == "" || expectedPass == "" || subtle.ConstantTimeCompare([]byte(apKey), []byte(expectedPass)) != 1 {
+		time.Sleep(2 * time.Second)
+		rsp.ErrRsp(c, -4, "unauthorized")
+		return
+	}
+
+	rsp.OkRsp(c)
 }
 
 func (s *Service) ConnectWifi(c *gin.Context) {
@@ -113,7 +147,6 @@ func (s *Service) DisconnectWifi(c *gin.Context) {
 	}
 
 	rsp.ErrRsp(c, -1, "wifi disconnect failed")
-	return
 }
 
 func connect(ssid string, password string) error {
@@ -213,4 +246,13 @@ func isAPMode() bool {
 	}
 
 	return true
+}
+
+func getApPassword() string {
+	passByte, err := os.ReadFile(WiFiApPassFile)
+	if err != nil {
+		return ""
+	}
+
+	return strings.ReplaceAll(string(passByte), "\n", "")
 }
