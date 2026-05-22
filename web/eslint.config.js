@@ -8,7 +8,7 @@ import globals from 'globals';
 
 export default [
   {
-    ignores: ['dist', '.eslintrc.cjs']
+    ignores: ['dist', '.eslintrc.cjs', 'public/mockServiceWorker.js']
   },
   {
     files: ['**/*.{ts,tsx}'],
