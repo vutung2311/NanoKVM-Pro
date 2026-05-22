@@ -124,13 +124,26 @@ func (s *Service) DownloadImage(c *gin.Context) {
 
 	// Check if it actually exists and fail if it doesn't
 	resp, err := http.Head(req.File)
-	if resp.StatusCode != http.StatusOK || err != nil {
+	if err != nil {
 		rsp.ErrRsp(c, -1, "failed when checking the url")
-		log.Error("Failed to check the URL")
+		log.Errorf("Failed to check the URL: %v", err)
+		defer os.Remove(sentinelPath)
+		return
+	}
+	if resp == nil {
+		rsp.ErrRsp(c, -1, "failed when checking the url")
+		log.Error("Failed to check the URL: empty response")
 		defer os.Remove(sentinelPath)
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		rsp.ErrRsp(c, -1, "failed when checking the url")
+		log.Errorf("Failed to check the URL, status code: %d", resp.StatusCode)
+		defer os.Remove(sentinelPath)
+		return
+	}
 
 	// Download the image in a goroutine to not block the request
 	go func() {
