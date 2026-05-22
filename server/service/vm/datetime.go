@@ -81,29 +81,18 @@ func getIANATimezone() (string, error) {
 }
 
 func (s *Service) GetTime(c *gin.Context) {
-	messageChan := make(chan int64)
-	defer close(messageChan)
-
-	go func() {
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case t := <-ticker.C:
-				messageChan <- t.UnixMilli()
-			case <-c.Request.Context().Done():
-				return
-			}
-		}
-	}()
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	ctx := c.Request.Context()
 
 	c.Stream(func(w io.Writer) bool {
-		if msg, ok := <-messageChan; ok {
-			c.SSEvent("message", msg)
+		select {
+		case <-ctx.Done():
+			return false
+		case t := <-ticker.C:
+			c.SSEvent("message", t.UnixMilli())
 			return true
 		}
-		return false
 	})
 }
 
