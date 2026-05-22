@@ -51,6 +51,10 @@ func (c *Client) Read() error {
 		}
 
 		log.Debugf("received message %d: %v", messageType, data)
+		if len(data) == 0 {
+			log.Debug("ignore empty websocket message")
+			continue
+		}
 
 		switch data[0] {
 		case Heartbeat:
