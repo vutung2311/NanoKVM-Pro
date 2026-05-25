@@ -71,12 +71,18 @@ func (p *AudioInputPlayer) Start() error {
 	p.active = true
 	log.Debug("audio input player started")
 
+	cmd := p.cmd
 	go func() {
-		if err := p.cmd.Wait(); err != nil {
+		if err := cmd.Wait(); err != nil {
 			log.Debugf("aplay process exited: %s", err)
 		}
+
 		p.mutex.Lock()
-		p.active = false
+		if p.cmd == cmd {
+			p.cmd = nil
+			p.stdin = nil
+			p.active = false
+		}
 		p.mutex.Unlock()
 	}()
 

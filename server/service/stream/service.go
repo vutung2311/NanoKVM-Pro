@@ -78,13 +78,13 @@ func (s *Service) SetQuality(c *gin.Context) {
 	}
 
 	screen := common.GetScreen()
-	value := uint16(req.Quality)
 
-	if value < 1 || value > 20000 {
+	if req.Quality < 1 || req.Quality > 20000 {
 		rsp.ErrRsp(c, -2, "invalid arguments")
 		return
 	}
 
+	value := uint16(req.Quality)
 	if req.Quality <= 100 {
 		screen.Quality = value
 	} else {
@@ -104,12 +104,12 @@ func (s *Service) SetGop(c *gin.Context) {
 		return
 	}
 
-	gop := uint8(req.Gop)
-	if gop < 1 || gop > 200 {
+	if req.Gop < 1 || req.Gop > 200 {
 		rsp.ErrRsp(c, -2, "invalid arguments")
 		return
 	}
 
+	gop := uint8(req.Gop)
 	result := common.GetKvmVision().SetGop(gop)
 	if result < 0 {
 		log.Errorf("failed to set GOP: %d", result)
@@ -132,12 +132,12 @@ func (s *Service) SetFps(c *gin.Context) {
 		return
 	}
 
-	fps := uint8(req.Fps)
-	if fps < 0 || fps > 120 {
+	if req.Fps < 0 || req.Fps > 120 {
 		rsp.ErrRsp(c, -2, "invalid arguments")
 		return
 	}
 
+	fps := uint8(req.Fps)
 	result := common.GetKvmVision().SetFps(fps)
 	if result < 0 {
 		log.Errorf("failed to set FPS: %d", result)

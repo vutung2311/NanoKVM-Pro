@@ -3,7 +3,6 @@ package webrtc
 import (
 	"runtime"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,13 +20,15 @@ import (
 )
 
 func NewWebRTCManager() *WebRTCManager {
-	return &WebRTCManager{
+	m := &WebRTCManager{
 		clients:      make(map[*websocket.Conn]*Client),
 		videoSending: 0,
 		audioSending: 0,
 		videoStatus:  0,
-		mutex:        sync.RWMutex{},
 	}
+	m.updateClientSnapshotLocked()
+
+	return m
 }
 
 func (m *WebRTCManager) AddClient(ws *websocket.Conn, client *Client) {
@@ -35,26 +36,44 @@ func (m *WebRTCManager) AddClient(ws *websocket.Conn, client *Client) {
 
 	m.mutex.Lock()
 	m.clients[ws] = client
+	count := m.updateClientSnapshotLocked()
 	m.mutex.Unlock()
 
 	common.GetKvmVision().SetStreamType(common.STREAM_TYPE_H264_WEBRTC)
 
-	log.Debugf("added client %s, total clients: %d", ws.RemoteAddr(), len(m.clients))
+	log.Debugf("added client %s, total clients: %d", ws.RemoteAddr(), count)
 }
 
 func (m *WebRTCManager) RemoveClient(ws *websocket.Conn) {
 	m.mutex.Lock()
 	delete(m.clients, ws)
+	count := m.updateClientSnapshotLocked()
 	m.mutex.Unlock()
 
-	log.Debugf("removed client %s, total clients: %d", ws.RemoteAddr(), len(m.clients))
+	log.Debugf("removed client %s, total clients: %d", ws.RemoteAddr(), count)
 }
 
 func (m *WebRTCManager) GetClientCount() int {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
+	return len(m.getClients())
+}
 
-	return len(m.clients)
+func (m *WebRTCManager) updateClientSnapshotLocked() int {
+	clients := make([]*Client, 0, len(m.clients))
+	for _, client := range m.clients {
+		clients = append(clients, client)
+	}
+	m.clientSnapshot.Store(&clients)
+
+	return len(clients)
+}
+
+func (m *WebRTCManager) getClients() []*Client {
+	clients := m.clientSnapshot.Load()
+	if clients == nil {
+		return nil
+	}
+
+	return *clients
 }
 
 func (m *WebRTCManager) StartVideoStream() {
@@ -119,7 +138,8 @@ func (m *WebRTCManager) sendVideoStream() {
 			Duration: timestamp,
 		}
 
-		for _, client := range m.clients {
+		clients := m.getClients()
+		for _, client := range clients {
 			client.track.writeVideo(sample)
 		}
 
@@ -161,7 +181,8 @@ func (m *WebRTCManager) sendAudioStream() {
 			Duration: duration,
 		}
 
-		for _, client := range m.clients {
+		clients := m.getClients()
+		for _, client := range clients {
 			client.track.writeAudio(sample)
 		}
 	}
@@ -222,13 +243,7 @@ func (m *WebRTCManager) updateStatus(videoStatus int) {
 
 	data := strconv.Itoa(int(newStatus))
 
-	m.mutex.RLock()
-	clients := make([]*Client, 0, len(m.clients))
-	for _, c := range m.clients {
-		clients = append(clients, c)
-	}
-	m.mutex.RUnlock()
-
+	clients := m.getClients()
 	for _, client := range clients {
 		_ = client.WriteMessage("video-status", data)
 	}

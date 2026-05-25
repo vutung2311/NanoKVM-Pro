@@ -2,6 +2,7 @@ package webrtc
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/rtp"
@@ -9,11 +10,12 @@ import (
 )
 
 type WebRTCManager struct {
-	clients      map[*websocket.Conn]*Client
-	videoSending int32
-	audioSending int32
-	videoStatus  int32
-	mutex        sync.RWMutex
+	clients        map[*websocket.Conn]*Client
+	clientSnapshot atomic.Pointer[[]*Client]
+	videoSending   int32
+	audioSending   int32
+	videoStatus    int32
+	mutex          sync.Mutex
 }
 
 type Client struct {

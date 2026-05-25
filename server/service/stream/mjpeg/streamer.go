@@ -42,9 +42,10 @@ func (s *Streamer) AddClient(c *gin.Context) {
 func (s *Streamer) RemoveClient(c *gin.Context) {
 	s.mutex.Lock()
 	delete(s.clients, c)
+	count := len(s.clients)
 	s.mutex.Unlock()
 
-	log.Debugf("mjpeg connection removed, remaining clients: %d", len(s.clients))
+	log.Debugf("mjpeg connection removed, remaining clients: %d", count)
 }
 
 func (s *Streamer) getClients() []*gin.Context {
