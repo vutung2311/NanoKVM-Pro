@@ -52,6 +52,7 @@ func (s *Service) ScanWifi(c *gin.Context) {
 }
 
 func removeConnected(wifiList []*proto.WiFi) []*proto.WiFi {
+	wifiList = removeInvalidWifi(wifiList)
 	if len(wifiList) == 0 {
 		return wifiList
 	}
@@ -68,6 +69,21 @@ func removeConnected(wifiList []*proto.WiFi) []*proto.WiFi {
 	}
 
 	return wifiList
+}
+
+func removeInvalidWifi(wifiList []*proto.WiFi) []*proto.WiFi {
+	if len(wifiList) == 0 {
+		return wifiList
+	}
+
+	filtered := wifiList[:0]
+	for _, wifi := range wifiList {
+		if wifi != nil {
+			filtered = append(filtered, wifi)
+		}
+	}
+
+	return filtered
 }
 
 func fixInvalidJSONEscapes(data []byte) []byte {
