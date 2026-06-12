@@ -1,3 +1,29 @@
+## 1.2.15 (2026-05-29)
+
+### Features
+
+- Added support for the LT6911D video capture chip
+
+### Bug Fixes
+
+- Fixed potential panics when checking image download URLs, reading EDID snapshots, and streaming system time events
+- Improved terminal authentication failure handling to stop safely when SSH authentication or terminal auth lock creation fails
+- Hardened WebSocket handling by ignoring empty messages and preventing close operations from blocking indefinitely
+- Made stream client tracking concurrency-safe across WebRTC, direct H.264, MJPEG, and audio playback paths
+- Added validation for image upload chunk parameters to reject invalid upload ranges
+- Ignored invalid Wi-Fi scan entries to avoid malformed network results
+- Guarded systemd service operations against nil clients
+- Restored the previous account file if password or credential updates fail
+
+### Improvements
+
+- Optimized USB network adapter recognition on Windows
+
+### Chores
+
+- Updated Go dependencies and module metadata
+- Upgraded frontend dependencies and tooling, refreshed the MSW worker, and added Node engine requirements
+
 ## 1.2.14 (2026-03-13)
 
 ### Features
