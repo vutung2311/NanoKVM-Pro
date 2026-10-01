@@ -33,7 +33,7 @@ func initialize() {
 	// init screen parameters
 	_ = common.GetScreen()
 
-	// run mouse jiggler
+	// run mouse jiggler (reads /etc/kvm/mouse-jiggler; no-op if disabled by user)
 	jiggler.GetJiggler().Run()
 
 	// waiting for exit signal

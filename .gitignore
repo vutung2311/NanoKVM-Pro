@@ -2,6 +2,12 @@
 *.log
 pnpm-debug.log*
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+
 # Web Frontend
 web/node_modules
 web/dist
@@ -9,11 +15,15 @@ web/web
 
 # Build & Release
 build/
+build_dist/
 release/
 latest/
 NanoKVM-Server
 support/scripts/NanoKVM-Pro
 support/toolchains/
+support/base_firmware/*.axp
+support/scripts/build_image/overlay/kvmapp/server/NanoKVM-Server
+support/scripts/build_image/overlay/kvmapp/server/web/
 
 # IDE/Editor
 .idea

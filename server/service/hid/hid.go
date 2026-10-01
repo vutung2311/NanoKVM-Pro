@@ -51,26 +51,39 @@ func (h *Hid) OpenNoLock() {
 
 	h.g0, err = os.OpenFile(HID0, os.O_WRONLY, 0o666)
 	if err != nil {
-		log.Errorf("open %s failed: %s", HID0, err)
+		log.Warnf("open %s failed: %s", HID0, err)
+		h.g0 = nil
 	}
 
 	h.g1, err = os.OpenFile(HID1, os.O_WRONLY, 0o666)
 	if err != nil {
-		log.Errorf("open %s failed: %s", HID1, err)
+		log.Warnf("open %s failed: %s", HID1, err)
+		h.g1 = nil
 	}
 
 	h.g2, err = os.OpenFile(HID2, os.O_WRONLY, 0o666)
 	if err != nil {
-		log.Errorf("open %s failed: %s", HID2, err)
+		// HID2 is optional (touchpad/absolute pointer)
+		log.Debugf("open %s failed (optional): %s", HID2, err)
+		h.g2 = nil
 	}
 }
 
 func (h *Hid) CloseNoLock() {
-	for _, file := range []*os.File{h.g0, h.g1, h.g2} {
-		if file != nil {
-			_ = file.Sync()
-			_ = file.Close()
-		}
+	if h.g0 != nil {
+		_ = h.g0.Sync()
+		_ = h.g0.Close()
+		h.g0 = nil
+	}
+	if h.g1 != nil {
+		_ = h.g1.Sync()
+		_ = h.g1.Close()
+		h.g1 = nil
+	}
+	if h.g2 != nil {
+		_ = h.g2.Sync()
+		_ = h.g2.Close()
+		h.g2 = nil
 	}
 }
 
@@ -81,7 +94,6 @@ func (h *Hid) Open() {
 	defer h.mouseMutex.Unlock()
 
 	h.CloseNoLock()
-
 	h.OpenNoLock()
 }
 
@@ -94,24 +106,47 @@ func (h *Hid) Close() {
 	h.CloseNoLock()
 }
 
-func (h *Hid) WriteHid0(data []byte) {
-	deadline := time.Now().Add(8 * time.Millisecond)
+func (h *Hid) recoverFile(filePtr **os.File, path string, data []byte, deadline time.Duration) {
+	if *filePtr != nil {
+		_ = (*filePtr).Close()
+		*filePtr = nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0o666)
+	if err != nil {
+		log.Debugf("reopen %s failed: %s", path, err)
+		return
+	}
+	*filePtr = f
+	if len(data) > 0 {
+		_ = f.SetWriteDeadline(time.Now().Add(deadline))
+		_, _ = f.Write(data)
+	}
+}
 
+func (h *Hid) WriteHid0(data []byte) {
 	h.kbMutex.Lock()
+	defer h.kbMutex.Unlock()
+
+	if h.g0 == nil {
+		var err error
+		h.g0, err = os.OpenFile(HID0, os.O_WRONLY, 0o666)
+		if err != nil {
+			log.Debugf("reopen %s failed: %s", HID0, err)
+			return
+		}
+	}
+
+	deadline := time.Now().Add(20 * time.Millisecond)
 	_ = h.g0.SetWriteDeadline(deadline)
 	_, err := h.g0.Write(data)
-	h.kbMutex.Unlock()
 
 	if err != nil {
-		switch {
-		case errors.Is(err, os.ErrClosed):
-			log.Errorf("hid already closed, reopen it...")
-			h.OpenNoLock()
-		case errors.Is(err, os.ErrDeadlineExceeded):
-			log.Debugf("write to %s timeout", HID0)
-		default:
-			log.Errorf("write to %s failed: %s", HID0, err)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			log.Debugf("write to %s timeout (host not polling)", HID0)
+			return
 		}
+		log.Warnf("write to %s failed (%s), recovering", HID0, err)
+		h.recoverFile(&h.g0, HID0, data, 20*time.Millisecond)
 		return
 	}
 
@@ -119,23 +154,29 @@ func (h *Hid) WriteHid0(data []byte) {
 }
 
 func (h *Hid) WriteHid1(data []byte) {
-	deadline := time.Now().Add(8 * time.Millisecond)
-
 	h.mouseMutex.Lock()
+	defer h.mouseMutex.Unlock()
+
+	if h.g1 == nil {
+		var err error
+		h.g1, err = os.OpenFile(HID1, os.O_WRONLY, 0o666)
+		if err != nil {
+			log.Debugf("reopen %s failed: %s", HID1, err)
+			return
+		}
+	}
+
+	deadline := time.Now().Add(15 * time.Millisecond)
 	_ = h.g1.SetWriteDeadline(deadline)
 	_, err := h.g1.Write(data)
-	h.mouseMutex.Unlock()
 
 	if err != nil {
-		switch {
-		case errors.Is(err, os.ErrClosed):
-			log.Errorf("hid already closed, reopen it...")
-			h.OpenNoLock()
-		case errors.Is(err, os.ErrDeadlineExceeded):
-			log.Debugf("write to %s timeout", HID1)
-		default:
-			log.Errorf("write to %s failed: %s", HID1, err)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			log.Debugf("write to %s timeout (host not polling)", HID1)
+			return
 		}
+		log.Warnf("write to %s failed (%s), recovering", HID1, err)
+		h.recoverFile(&h.g1, HID1, data, 15*time.Millisecond)
 		return
 	}
 
@@ -143,23 +184,29 @@ func (h *Hid) WriteHid1(data []byte) {
 }
 
 func (h *Hid) WriteHid2(data []byte) {
-	deadline := time.Now().Add(8 * time.Millisecond)
-
 	h.mouseMutex.Lock()
+	defer h.mouseMutex.Unlock()
+
+	if h.g2 == nil {
+		var err error
+		h.g2, err = os.OpenFile(HID2, os.O_WRONLY, 0o666)
+		if err != nil {
+			// HID2 is optional; if not present, drop silently
+			return
+		}
+	}
+
+	deadline := time.Now().Add(15 * time.Millisecond)
 	_ = h.g2.SetWriteDeadline(deadline)
 	_, err := h.g2.Write(data)
-	h.mouseMutex.Unlock()
 
 	if err != nil {
-		switch {
-		case errors.Is(err, os.ErrClosed):
-			log.Errorf("hid already closed, reopen it...")
-			h.OpenNoLock()
-		case errors.Is(err, os.ErrDeadlineExceeded):
-			log.Debugf("write to %s timeout", HID2)
-		default:
-			log.Errorf("write to %s failed: %s", HID2, err)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			log.Debugf("write to %s timeout (host not polling)", HID2)
+			return
 		}
+		log.Warnf("write to %s failed (%s), recovering", HID2, err)
+		h.recoverFile(&h.g2, HID2, data, 15*time.Millisecond)
 		return
 	}
 
