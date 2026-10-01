@@ -234,6 +234,10 @@ func findWifiInterfaces() ([]string, error) {
 }
 
 func isAPMode() bool {
+	if isWifiConnected() {
+		return false
+	}
+
 	cmd := exec.Command("pgrep", "-x", "hostapd")
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError

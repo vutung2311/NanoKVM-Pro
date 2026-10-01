@@ -60,7 +60,7 @@ func (c *Client) Read() error {
 		case Heartbeat:
 			c.UpdateHeartbeat()
 		case KeyboardEvent:
-			writeQueue(c.keyboard, data[1:])
+			writeKeyboardQueue(c.keyboard, data[1:])
 		case MouseEvent:
 			writeQueue(c.mouse, data[1:])
 		}
@@ -104,6 +104,19 @@ func (c *Client) Close() {
 }
 
 func writeQueue(queue chan []byte, data []byte) {
-	queue <- data
+	select {
+	case queue <- data:
+	default:
+		log.Debug("mouse queue full, dropping delta packet to prevent websocket stall")
+	}
+	jiggler.GetJiggler().Update()
+}
+
+func writeKeyboardQueue(queue chan []byte, data []byte) {
+	select {
+	case queue <- data:
+	case <-time.After(50 * time.Millisecond):
+		log.Warn("keyboard queue full, timed out to prevent websocket stall")
+	}
 	jiggler.GetJiggler().Update()
 }
