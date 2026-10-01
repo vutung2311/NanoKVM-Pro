@@ -7,6 +7,19 @@ import argparse
 import subprocess
 from tqdm import tqdm
 
+def get_privilege_cmd():
+    if os.geteuid() == 0:
+        return []
+    if shutil.which("pkexec"):
+        return ["pkexec"]
+    if shutil.which("sudo"):
+        return ["sudo"]
+    if shutil.which("doas"):
+        return ["doas"]
+    return []
+
+SUDO = get_privilege_cmd()
+
 def replace_axp(axp_file, replacements, output=None):
     if output is None:
         output = os.path.splitext(axp_file)[0] + "_modified.axp"
@@ -58,29 +71,30 @@ def replace_axp(axp_file, replacements, output=None):
             fi'''
         ])
 
-        run_chroot_commands(mount_point=mount_point, commands=["mkdir /data"])
+        run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /data"])
 
         if args.remove_file:
             remove_files(mount_point=mount_point, remove_file_list=args.remove_file)
 
+        if args.app:
+            subprocess.run(SUDO + ["rsync", "-av", f"{args.app}/", f"{mount_point}/root"], check=True)
+            run_chroot_commands(mount_point=mount_point, commands=["dpkg -i /root/*.deb"])
+            run_chroot_commands(mount_point=mount_point, commands=["rm -f /root/*.deb"])
+            run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /root/.kvmcache"])
+            subprocess.run(SUDO + ["rsync", "-av", f"{args.app}/", f"{mount_point}/root/.kvmcache"], check=True)
+
         if args.overlay:
-            subprocess.run(["sudo", "rsync", "-av",
+            subprocess.run(SUDO + ["rsync", "-av",
                 "--exclude=boot/",
                 f"{args.overlay}/",
                 f"{mount_point}/"
             ], check=True)
 
-        if args.app:
-            subprocess.run(["sudo", "rsync", "-av", f"{args.app}/", f"{mount_point}/root"], check=True)
-            run_chroot_commands(mount_point=mount_point, commands=["dpkg -i /root/*.deb"])
-            run_chroot_commands(mount_point=mount_point, commands=["rm -f /root/*.deb"])
-            run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /root/.kvmcache"])
-            subprocess.run(["sudo", "rsync", "-av", f"{args.app}/", f"{mount_point}/root/.kvmcache"], check=True)
-
-        run_chroot_commands(mount_point=mount_point, commands=["apt update && apt install --reinstall -y ca-certificates && update-ca-certificates"])
+        run_chroot_commands(mount_point=mount_point, commands=["apt update && apt install --reinstall -y ca-certificates && update-ca-certificates || true"])
         run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/ssh.service"])
         run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/usb-gadget.service"])
         run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/sockets.target.wants/ssh.socket"])
+        run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/cua.service"])
 
         run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /var/lib/misc"])
         run_chroot_commands(mount_point=mount_point, commands=["touch /var/lib/misc/udhcpd.usb0.leases"])
@@ -102,13 +116,13 @@ def replace_axp(axp_file, replacements, output=None):
     if args.overlay:
         print("Overlaying boot files...")
         try:
-            subprocess.run(["sudo", "mount", "-t", "vfat",
+            subprocess.run(SUDO + ["mount", "-t", "vfat",
                             os.path.join(temp_dir, "bootfs.fat32"),
                             mount_point], check=True)
-            subprocess.run(["sudo", "rsync", "-av", "--no-owner", "--no-group",
+            subprocess.run(SUDO + ["rsync", "-av", "--no-owner", "--no-group",
                             f"{args.overlay}/boot/",  f"{mount_point}/"], check=True)
         finally:
-            subprocess.run(["sudo", "umount", mount_point], check=False)
+            subprocess.run(SUDO + ["umount", mount_point], check=False)
 
     subprocess.run(["sync"], check=True)
 
@@ -139,28 +153,28 @@ def raw_to_sparse(raw_img, sparse_img):
 def mount_and_chroot(raw_img, mount_point="/mnt"):
     os.makedirs(mount_point, exist_ok=True)
 
-    subprocess.run(["sudo", "mount", "-o", "loop", raw_img, mount_point], check=True)
-    subprocess.run(["sudo", "mount", "-t", "proc", "/proc", os.path.join(mount_point, "proc")], check=True)
-    subprocess.run(["sudo", "mount", "-t", "sysfs", "/sys", os.path.join(mount_point, "sys")], check=True)
-    subprocess.run(["sudo", "mount", "--bind", "/dev", os.path.join(mount_point, "dev")], check=True)
-    subprocess.run(["sudo", "mount", "--bind", "/dev/pts", os.path.join(mount_point, "dev/pts")], check=True)
+    subprocess.run(SUDO + ["mount", "-o", "loop", raw_img, mount_point], check=True)
+    subprocess.run(SUDO + ["mount", "-t", "proc", "/proc", os.path.join(mount_point, "proc")], check=True)
+    subprocess.run(SUDO + ["mount", "-t", "sysfs", "/sys", os.path.join(mount_point, "sys")], check=True)
+    subprocess.run(SUDO + ["mount", "--bind", "/dev", os.path.join(mount_point, "dev")], check=True)
+    subprocess.run(SUDO + ["mount", "--bind", "/dev/pts", os.path.join(mount_point, "dev/pts")], check=True)
 
-    subprocess.run(["sudo", "cp", "/usr/bin/qemu-aarch64-static", os.path.join(mount_point, "usr/bin/qemu-aarch64-static")], check=True)
-    subprocess.run(["sudo", "cp", "/etc/resolv.conf", os.path.join(mount_point, "etc/resolv.conf")], check=True)
+    subprocess.run(SUDO + ["cp", "/usr/bin/qemu-aarch64-static", os.path.join(mount_point, "usr/bin/qemu-aarch64-static")], check=True)
+    subprocess.run(SUDO + ["cp", "/etc/resolv.conf", os.path.join(mount_point, "etc/resolv.conf")], check=True)
 
 def run_chroot_commands(mount_point="/mnt", commands=None):
     if commands:
         for cmd in commands:
             full_cmd = f"export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export DEBIAN_FRONTEND=noninteractive; {cmd}"
-            subprocess.run(["sudo", "chroot", mount_point, "bash", "-c", full_cmd], check=True)
+            subprocess.run(SUDO + ["chroot", mount_point, "bash", "-c", full_cmd], check=True)
     else:
-        subprocess.run(["sudo", "chroot", mount_point, "/bin/bash"], check=True)
+        subprocess.run(SUDO + ["chroot", mount_point, "/bin/bash"], check=True)
 
 def umount_chroot(mount_point="/mnt"):
-    subprocess.run(["sudo", "rm", "-rf", os.path.join(mount_point, "usr/bin/qemu-aarch64-static")], check=True)
+    subprocess.run(SUDO + ["rm", "-rf", os.path.join(mount_point, "usr/bin/qemu-aarch64-static")], check=True)
     for mp in ["dev/pts", "dev", "sys", "proc"]:
-        subprocess.run(["sudo", "umount", os.path.join(mount_point, mp)], check=False)
-    subprocess.run(["sudo", "umount", mount_point], check=False)
+        subprocess.run(SUDO + ["umount", os.path.join(mount_point, mp)], check=False)
+    subprocess.run(SUDO + ["umount", mount_point], check=False)
 
 def remove_files(mount_point="/mnt", remove_file_list="remove_file.txt"):
     if not os.path.exists(remove_file_list):
@@ -170,7 +184,7 @@ def remove_files(mount_point="/mnt", remove_file_list="remove_file.txt"):
     print(f"[+] Removing unwanted files from list: {remove_file_list}")
 
     target_list = os.path.join(mount_point, "root", "remove_file.txt")
-    subprocess.run(["sudo", "cp", remove_file_list, target_list], check=True)
+    subprocess.run(SUDO + ["cp", remove_file_list, target_list], check=True)
 
     removal_script = f'''
 remove_file_list="/root/remove_file.txt"
@@ -207,7 +221,7 @@ echo "[+] Cleanup completed: $removed_count/$total_count files removed"
 rm -f "$remove_file_list"
 '''
 
-    subprocess.run(["sudo", "chroot", mount_point, "bash", "-c", removal_script], check=True)
+    subprocess.run(SUDO + ["chroot", mount_point, "bash", "-c", removal_script], check=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Replace dtb/boot/u-boot files in AXP file")
