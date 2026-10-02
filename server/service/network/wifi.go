@@ -19,8 +19,12 @@ import (
 )
 
 const (
-	WiFiScript     = "/kvmcomm/scripts/wifi.sh"
-	WiFiApPassFile = "/tmp/ap.pass"
+	WiFiScript = "/kvmcomm/scripts/wifi.sh"
+)
+
+var (
+	WiFiApPassFile  = "/tmp/ap.pass"
+	HostapdConfFile = "/dev/shm/tmp/wifi/hostapd.conf"
 )
 
 func (s *Service) GetWifi(c *gin.Context) {
@@ -62,16 +66,17 @@ func (s *Service) ConnectWifiNoAuth(c *gin.Context) {
 	var req proto.ConnectWifiReq
 	var rsp proto.Response
 
-	// Check Wi-Fi configuration mode
-	if _, err := os.Stat("/tmp/wifi_config"); err != nil {
-		rsp.ErrRsp(c, -1, "invalid mode")
-		return
+	// Check Wi-Fi configuration mode (valid if actively in AP mode or flag file present)
+	if !isAPMode() {
+		if _, err := os.Stat("/tmp/wifi_config"); err != nil {
+			rsp.ErrRsp(c, -1, "invalid mode")
+			return
+		}
 	}
 
 	// Verify AP Password
 	apKey := c.GetHeader("X-AP-Key")
-	expectedPass := getApPassword()
-	if apKey == "" || expectedPass == "" || subtle.ConstantTimeCompare([]byte(apKey), []byte(expectedPass)) != 1 {
+	if !verifyApPassword(apKey) {
 		time.Sleep(2 * time.Second)
 		rsp.ErrRsp(c, -4, "unauthorized")
 		return
@@ -103,8 +108,7 @@ func (s *Service) VerifyApLogin(c *gin.Context) {
 	}
 
 	apKey := c.GetHeader("X-AP-Key")
-	expectedPass := getApPassword()
-	if apKey == "" || expectedPass == "" || subtle.ConstantTimeCompare([]byte(apKey), []byte(expectedPass)) != 1 {
+	if !verifyApPassword(apKey) {
 		time.Sleep(2 * time.Second)
 		rsp.ErrRsp(c, -4, "unauthorized")
 		return
@@ -252,11 +256,68 @@ func isAPMode() bool {
 	return true
 }
 
-func getApPassword() string {
-	passByte, err := os.ReadFile(WiFiApPassFile)
-	if err != nil {
-		return ""
+func getExpectedApPasswords() []string {
+	var passwords []string
+
+	// 1. Authoritative running hostapd configuration
+	if confByte, err := os.ReadFile(HostapdConfFile); err == nil {
+		for _, line := range strings.Split(string(confByte), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "wpa_passphrase=") {
+				pass := strings.TrimSpace(strings.TrimPrefix(line, "wpa_passphrase="))
+				if pass != "" {
+					passwords = append(passwords, pass)
+				}
+				break
+			}
+		}
 	}
 
-	return strings.ReplaceAll(string(passByte), "\n", "")
+	// 2. Fallback to /tmp/ap.pass
+	if passByte, err := os.ReadFile(WiFiApPassFile); err == nil {
+		pass := strings.TrimSpace(string(passByte))
+		if pass != "" {
+			alreadyAdded := false
+			for _, p := range passwords {
+				if p == pass {
+					alreadyAdded = true
+					break
+				}
+			}
+			if !alreadyAdded {
+				passwords = append(passwords, pass)
+			}
+		}
+	}
+
+	return passwords
 }
+
+func verifyApPassword(inputPass string) bool {
+	inputPass = strings.TrimSpace(inputPass)
+	if inputPass == "" {
+		return false
+	}
+
+	expectedList := getExpectedApPasswords()
+	if len(expectedList) == 0 {
+		return false
+	}
+
+	for _, expected := range expectedList {
+		if subtle.ConstantTimeCompare([]byte(inputPass), []byte(expected)) == 1 {
+			return true
+		}
+	}
+
+	return false
+}
+
+func getApPassword() string {
+	passwords := getExpectedApPasswords()
+	if len(passwords) > 0 {
+		return passwords[0]
+	}
+	return ""
+}
+
