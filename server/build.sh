@@ -161,7 +161,7 @@ build_project() {
     log_info "Building Go application..."
     if ! CGO_ENABLED=1 GOOS=linux GOARCH=${arch} CC=${cc} \
         CGO_CFLAGS="$cgo_cflags" CGO_LDFLAGS="$cgo_ldflags" \
-        GOEXPERIMENT=boringcrypto go build -ldflags "\
+        GOEXPERIMENT=boringcrypto go build -trimpath -ldflags "-s -w \
         -X 'main.Version=$VERSION' \
         -X 'main.BuildTime=$BUILD_TIME' \
         -X 'main.Commit=$COMMIT' \
@@ -179,6 +179,13 @@ build_project() {
     if ! patchelf --add-rpath \$ORIGIN/dl_lib NanoKVM-Server; then
         log_error "Failed to add runtime library path"
         return 1
+    fi
+
+    # Strip binary symbols using cross-strip toolchain
+    local strip_bin="$(dirname "$cc")/aarch64-none-linux-gnu-strip"
+    if [ -x "$strip_bin" ]; then
+        log_info "Stripping binary symbols with $strip_bin..."
+        "$strip_bin" -s NanoKVM-Server || log_warn "Strip failed, keeping unstripped binary"
     fi
 
     log_info "Runtime library path added successfully"

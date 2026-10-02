@@ -20,6 +20,7 @@ BASE_FIRMWARE_DIR ?= $(SUPPORT_DIR)/base_firmware
 DIST_DIR        ?= $(ROOT_DIR)/build_dist
 APP_DIR         ?= $(DIST_DIR)/nanokvm_pro_$(VERSION)
 BASE_APP_DIR    ?= $(BASE_FIRMWARE_DIR)/nanokvm_pro_$(VERSION)
+WORK_DIR        ?= /var/tmp/nanokvm_build_axp
 
 # Release Artifact File Names & Templates
 BASE_AXP        ?= $(BASE_FIRMWARE_DIR)/20260529_NanoKVMPro_1_0_15.axp
@@ -162,6 +163,10 @@ deb: server client
 		cp $(OVERLAY_DIR)/kvmapp/scripts/usbdev.sh "$$REPACK_DIR/kvmapp/scripts/usbdev.sh" && \
 		chmod 755 "$$REPACK_DIR/kvmapp/scripts/usbdev.sh"; \
 	fi && \
+	if [ -f "$(OVERLAY_DIR)/kvmapp/scripts/nanokvm_pre.sh" ]; then \
+		cp $(OVERLAY_DIR)/kvmapp/scripts/nanokvm_pre.sh "$$REPACK_DIR/kvmapp/scripts/nanokvm_pre.sh" && \
+		chmod 755 "$$REPACK_DIR/kvmapp/scripts/nanokvm_pre.sh"; \
+	fi && \
 	dpkg-deb --root-owner-group -b "$$REPACK_DIR" $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb && \
 	rm -rf "$$REPACK_DIR"
 	@cp -f $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb $(DIST_DIR)/
@@ -205,27 +210,34 @@ web-pkg: deb
 # ------------------------------------------------------------------------------
 # Image Generation Targets (.axp and .img.xz)
 # ------------------------------------------------------------------------------
+# Prevent parallel race conditions during heavy/privileged image modification
+.NOTPARALLEL: image-axp $(OUTPUT_AXP) image-raw image-img $(OUTPUT_IMG_XZ) image release
+
 ## Repackage base AXP into custom NanoKVM-Pro AXP image
-image-axp: overlay
+image-axp: $(OUTPUT_AXP)
+
+$(OUTPUT_AXP): deb overlay
 	@echo -e "$(CYAN)==> Packaging custom AXP image using build_image.py...$(RESET)"
 	@if [ ! -f "$(BASE_AXP)" ]; then \
 		echo -e "$(CYAN)==> Base AXP file not found, fetching base firmware...$(RESET)"; \
 		$(MAKE) fetch-base; \
 	fi
 	@mkdir -p $(DIST_DIR)
+	@echo -e "$(YELLOW)[*] Elevated privileges required for image loop mounting and chroot.$(RESET)"
+	@echo -e "$(YELLOW)[*] Waiting for administrator authorization (Polkit/$(PRIV_ESC))...$(RESET)"
 	$(PRIV_ESC) $(PYTHON) $(BUILD_IMAGE_DIR)/build_image.py \
 		$(BASE_AXP) \
 		--app $(APP_DIR) \
 		--overlay $(OVERLAY_DIR) \
+		--work-dir $(WORK_DIR) \
 		-o $(OUTPUT_AXP)
 	@echo -e "$(GREEN)[✓] AXP image created: $(OUTPUT_AXP)$(RESET)"
 
-$(OUTPUT_AXP):
-	@$(MAKE) image-axp
-
 ## Convert AXP image to compressed raw disk image (.img.xz)
 image-raw: image-img
-image-img: $(OUTPUT_AXP)
+image-img: $(OUTPUT_IMG_XZ)
+
+$(OUTPUT_IMG_XZ): $(OUTPUT_AXP)
 	@echo -e "$(CYAN)==> Converting AXP to raw disk image (.img.xz) using axp2img...$(RESET)"
 	@if [ ! -x "$$(command -v $(AXP2IMG) 2>/dev/null)" ] && [ ! -x "$(AXP2IMG)" ]; then \
 		echo -e "$(RED)Error: axp2img tool not found at $(AXP2IMG).$(RESET)"; \
@@ -236,13 +248,13 @@ image-img: $(OUTPUT_AXP)
 	@echo -e "$(GREEN)[✓] Raw compressed image created: $(OUTPUT_IMG_XZ)$(RESET)"
 
 ## Build both AXP and raw .img.xz images
-image: image-axp image-raw
+image: $(OUTPUT_IMG_XZ)
 
 # ------------------------------------------------------------------------------
 # Release Target (End-to-End Orchestrator)
 # ------------------------------------------------------------------------------
 ## Complete end-to-end pipeline (server + client + deb + overlay + axp + img.xz)
-release: build overlay deb image-axp image-raw
+release: build deb overlay $(OUTPUT_AXP) $(OUTPUT_IMG_XZ)
 	@echo ""
 	@echo -e "$(GREEN)==================================================================$(RESET)"
 	@echo -e "$(GREEN)  NanoKVM Pro End-to-End Release Complete!$(RESET)"
@@ -361,6 +373,7 @@ clean:
 	@echo -e "$(YELLOW)==> Cleaning build artifacts...$(RESET)"
 	@rm -f $(SERVER_DIR)/NanoKVM-Server
 	@rm -rf $(WEB_DIR)/dist
+	@rm -rf $(OVERLAY_DIR)/kvmapp/server/web $(OVERLAY_DIR)/kvmapp/server/NanoKVM-Server
 	@echo -e "$(GREEN)[✓] Clean complete.$(RESET)"
 
 ## Full clean of all generated build outputs (preserves support/base_firmware)

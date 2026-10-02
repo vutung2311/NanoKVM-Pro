@@ -73,7 +73,7 @@ func (s *Streamer) run() {
 	vision := common.GetKvmVision()
 	screen := common.GetScreen()
 
-	duration := time.Second / time.Duration(120)
+	duration := stream.GetStreamTickerDuration()
 	ticker := time.NewTicker(duration)
 	defer ticker.Stop()
 

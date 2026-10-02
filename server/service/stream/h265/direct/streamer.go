@@ -74,7 +74,7 @@ func (s *Streamer) getClients() []*websocket.Conn {
 func (s *Streamer) run() {
 	defer atomic.StoreInt32(&s.running, 0)
 
-	duration := time.Second / time.Duration(120)
+	duration := stream.GetStreamTickerDuration()
 	ticker := time.NewTicker(duration)
 	defer ticker.Stop()
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Modal } from 'antd';
 import clsx from 'clsx';
 import Cookies from 'js-cookie';
@@ -25,44 +25,15 @@ export const VideoModeH265 = ({ videoMode, update }: VideoModeH265Props) => {
   const [isEnabled, setIsEnabled] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const divRef = useRef<any>(null);
-
   useEffect(() => {
     const videoModes = getSupportedVideoModes();
     const supported = videoModes.some((mode) => mode.startsWith('h265'));
     setIsSupported(supported);
 
-    const h265 = Cookies.get('h265');
-    if (h265) {
+    if (supported) {
+      Cookies.set('h265', 'Enable');
       setIsEnabled(true);
-      return;
     }
-
-    const targetNode = divRef.current;
-    if (!targetNode) return;
-
-    const observer = new MutationObserver((mutationsList, obs) => {
-      for (const mutation of mutationsList) {
-        if (mutation.type === 'childList') {
-          mutation.removedNodes.forEach((removedNode) => {
-            if (removedNode === targetNode) {
-              Cookies.set('h265', 'Enable');
-              setIsEnabled(true);
-              obs.disconnect();
-            }
-          });
-        }
-      }
-    });
-
-    const config = { childList: true };
-    if (targetNode.parentNode) {
-      observer.observe(targetNode.parentNode, config);
-    }
-
-    return () => {
-      observer.disconnect();
-    };
   }, []);
 
   function handleClick(mode: string) {
@@ -76,7 +47,6 @@ export const VideoModeH265 = ({ videoMode, update }: VideoModeH265Props) => {
 
   return (
     <>
-      <div id="disable-H.265" ref={divRef} />
       {videoModes.map((mode) => (
         <div
           key={mode.key}

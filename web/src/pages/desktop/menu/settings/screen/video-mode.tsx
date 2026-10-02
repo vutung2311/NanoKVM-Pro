@@ -30,8 +30,8 @@ export const VideoMode = () => {
     const supported = videoModes.some((mode) => mode.startsWith('h265'));
     setIsSupported(supported);
 
-    const h265 = Cookies.get('h265');
-    if (h265) {
+    if (supported) {
+      Cookies.set('h265', 'Enable');
       setIsEnabled(true);
     }
   }, []);
