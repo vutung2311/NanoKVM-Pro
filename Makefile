@@ -159,13 +159,9 @@ deb: server client
 	chmod 755 "$$REPACK_DIR/kvmapp/server/NanoKVM-Server" && \
 	rm -rf "$$REPACK_DIR/kvmapp/server/web"/* && \
 	cp -r $(WEB_DIR)/dist/* "$$REPACK_DIR/kvmapp/server/web/" && \
-	if [ -f "$(OVERLAY_DIR)/kvmapp/scripts/usbdev.sh" ]; then \
-		cp $(OVERLAY_DIR)/kvmapp/scripts/usbdev.sh "$$REPACK_DIR/kvmapp/scripts/usbdev.sh" && \
-		chmod 755 "$$REPACK_DIR/kvmapp/scripts/usbdev.sh"; \
-	fi && \
-	if [ -f "$(OVERLAY_DIR)/kvmapp/scripts/nanokvm_pre.sh" ]; then \
-		cp $(OVERLAY_DIR)/kvmapp/scripts/nanokvm_pre.sh "$$REPACK_DIR/kvmapp/scripts/nanokvm_pre.sh" && \
-		chmod 755 "$$REPACK_DIR/kvmapp/scripts/nanokvm_pre.sh"; \
+	if [ -d "$(OVERLAY_DIR)/kvmapp/scripts" ]; then \
+		cp -r $(OVERLAY_DIR)/kvmapp/scripts/* "$$REPACK_DIR/kvmapp/scripts/" && \
+		chmod -R 755 "$$REPACK_DIR/kvmapp/scripts/"; \
 	fi && \
 	dpkg-deb --root-owner-group -b "$$REPACK_DIR" $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb && \
 	rm -rf "$$REPACK_DIR"
@@ -281,7 +277,7 @@ deploy: deb
 	echo -e "$(CYAN)==> Copying deb packages to root@$$TARGET_IP:/tmp/...$(RESET)"; \
 	scp $(DIST_DIR)/nanokvmpro_$(VERSION)_arm64.deb $(DIST_DIR)/kvmcomm_$(VERSION)_arm64.deb root@$$TARGET_IP:/tmp/; \
 	echo -e "$(CYAN)==> Installing packages and restarting services on $$TARGET_IP...$(RESET)"; \
-	ssh root@$$TARGET_IP "dpkg -i /tmp/nanokvmpro_$(VERSION)_arm64.deb /tmp/kvmcomm_$(VERSION)_arm64.deb && systemctl restart nanokvm kvmcomm && rm -f /tmp/*_arm64.deb"; \
+	ssh root@$$TARGET_IP "dpkg -i /tmp/nanokvmpro_$(VERSION)_arm64.deb /tmp/kvmcomm_$(VERSION)_arm64.deb && /kvmapp/scripts/usbdev.sh restart && systemctl restart nanokvm kvmcomm && rm -f /tmp/*_arm64.deb"; \
 	echo -e "$(GREEN)[✓] Deployment to $$TARGET_IP completed successfully!$(RESET)"
 
 # ------------------------------------------------------------------------------
