@@ -1,11 +1,27 @@
 #!/usr/bin/env python3
 
 import os
+import sys
+import time
+import signal
+import pwd
 import zipfile
 import shutil
 import argparse
 import subprocess
 from tqdm import tqdm
+
+_active_mount_point = None
+
+def _cleanup_signal_handler(signum, frame):
+    global _active_mount_point
+    if _active_mount_point and os.path.exists(_active_mount_point):
+        print(f"\n[!] Signal {signum} received. Cleaning up active mounts at {_active_mount_point}...")
+        umount_chroot(_active_mount_point)
+    sys.exit(128 + signum)
+
+signal.signal(signal.SIGINT, _cleanup_signal_handler)
+signal.signal(signal.SIGTERM, _cleanup_signal_handler)
 
 def get_privilege_cmd():
     if os.geteuid() == 0:
@@ -20,16 +36,38 @@ def get_privilege_cmd():
 
 SUDO = get_privilege_cmd()
 
-def replace_axp(axp_file, replacements, output=None):
+def ensure_root_privileges():
+    if os.geteuid() == 0:
+        return
+    priv_cmd = get_privilege_cmd()
+    if not priv_cmd:
+        print("[!] Error: Root privileges are required for image loop mount and chroot, but no privilege escalation tool (pkexec/sudo/doas) was found.")
+        sys.exit(1)
+
+    print("[*] NanoKVM Pro image builder requires elevated privileges (loop mount, chroot).")
+    print(f"[*] Waiting for authorization ({priv_cmd[0]})...")
+    sys.stdout.flush()
+
+    cmd = priv_cmd + [sys.executable, os.path.abspath(__file__)] + sys.argv[1:]
+    res = subprocess.run(cmd)
+    sys.exit(res.returncode)
+
+def replace_axp(axp_file, replacements, output=None, work_dir=None):
+    global _active_mount_point
     if output is None:
         output = os.path.splitext(axp_file)[0] + "_modified.axp"
 
-    temp_dir = os.path.join(os.path.dirname(axp_file), "axp_temp")
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir, exist_ok=True)
-
+    temp_dir = os.path.abspath(work_dir) if work_dir else os.path.join(os.path.dirname(axp_file), "axp_temp")
     mount_point = os.path.join(temp_dir, "mount_point")
+    _active_mount_point = mount_point
+
+    if os.path.exists(mount_point):
+        print(f"[+] Checking and cleaning any stale mounts in {mount_point}...")
+        umount_chroot(mount_point)
+
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    os.makedirs(temp_dir, exist_ok=True)
     os.makedirs(mount_point, exist_ok=True)
 
     print(f"[+] Extracting {axp_file}")
@@ -96,14 +134,48 @@ def replace_axp(axp_file, replacements, output=None):
         run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/sockets.target.wants/ssh.socket"])
         run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/cua.service"])
 
+        # Disable redundant background timers & unused services
+        run_chroot_commands(mount_point=mount_point, commands=[
+            "rm -f /etc/systemd/system/timers.target.wants/apt-daily.timer "
+            "/etc/systemd/system/timers.target.wants/apt-daily-upgrade.timer "
+            "/etc/systemd/system/timers.target.wants/motd-news.timer "
+            "/etc/systemd/system/bluetooth.target.wants/bluetooth.service || true"
+        ])
+
+        # Configure journald to volatile RAM storage (16MB max) to eliminate eMMC flash churn
+        run_chroot_commands(mount_point=mount_point, commands=[
+            "mkdir -p /etc/systemd/journald.conf.d && printf '[Journal]\\nStorage=volatile\\nRuntimeMaxUse=16M\\n' > /etc/systemd/journald.conf.d/00-volatile.conf"
+        ])
+
+        # Purge stale APT cache and package lists (saves ~374MB)
+        run_chroot_commands(mount_point=mount_point, commands=[
+            "rm -rf /var/lib/apt/lists/* /var/cache/apt/*.bin /var/cache/apt/archives/* /tmp/*"
+        ])
+
+        # Purge unused Mesa 3D desktop GPU DRI drivers (saves ~1.1GB on headless AX630C)
+        run_chroot_commands(mount_point=mount_point, commands=[
+            "rm -rf /usr/lib/aarch64-linux-gnu/dri/*"
+        ])
+
+        # Purge unused camera sensor tuning files from IP camera BSP (saves ~150MB)
+        run_chroot_commands(mount_point=mount_point, commands=[
+            "find /opt/etc/ -maxdepth 1 -type f \\( -name '*.ini' -o -name '*.bin' \\) ! -name '*lt6911*' -delete 2>/dev/null || true"
+        ])
+
         run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /var/lib/misc"])
         run_chroot_commands(mount_point=mount_point, commands=["touch /var/lib/misc/udhcpd.usb0.leases"])
         run_chroot_commands(mount_point=mount_point, commands=["chmod 644 /var/lib/misc/udhcpd.usb0.leases"])
 
-        run_chroot_commands(mount_point=mount_point, commands=["sync"])
+        # Zero unallocated blocks before unmount so img2simg skips empty space
+        run_chroot_commands(mount_point=mount_point, commands=[
+            "dd if=/dev/zero of=/zero.fill bs=1M status=none 2>/dev/null || true",
+            "rm -f /zero.fill",
+            "sync"
+        ])
     finally:
         print("[+] Cleaning up mounts...")
         umount_chroot(mount_point)
+        _active_mount_point = None
 
     raw_img = os.path.join(temp_dir, "ubuntu_rootfs.ext4")
     subprocess.run(["e2fsck", "-fy", raw_img], check=False)
@@ -122,7 +194,7 @@ def replace_axp(axp_file, replacements, output=None):
             subprocess.run(SUDO + ["rsync", "-av", "--no-owner", "--no-group",
                             f"{args.overlay}/boot/",  f"{mount_point}/"], check=True)
         finally:
-            subprocess.run(SUDO + ["umount", mount_point], check=False)
+            subprocess.run(SUDO + ["umount", "-l", mount_point], check=False)
 
     subprocess.run(["sync"], check=True)
 
@@ -141,7 +213,18 @@ def replace_axp(axp_file, replacements, output=None):
                     zip_out.write(full_path, rel_path)
                     pbar.update(1)
 
-    shutil.rmtree(temp_dir)
+    print(f"[+] Cleaning up temporary build directory: {temp_dir}...")
+    shutil.rmtree(temp_dir, ignore_errors=True)
+
+    real_uid_str = os.environ.get("PKEXEC_UID") or os.environ.get("SUDO_UID")
+    if real_uid_str and os.path.exists(output):
+        try:
+            uid = int(real_uid_str)
+            gid = pwd.getpwuid(uid).pw_gid
+            os.chown(output, uid, gid)
+        except Exception:
+            pass
+
     print(f"[+] Done! New axp file: {output}")
 
 def sparse_to_raw(sparse_img, raw_img):
@@ -170,11 +253,29 @@ def run_chroot_commands(mount_point="/mnt", commands=None):
     else:
         subprocess.run(SUDO + ["chroot", mount_point, "/bin/bash"], check=True)
 
+def is_mounted(path):
+    path = os.path.realpath(path)
+    try:
+        with open("/proc/mounts", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and os.path.realpath(parts[1]) == path:
+                    return True
+    except Exception:
+        pass
+    return False
+
 def umount_chroot(mount_point="/mnt"):
-    subprocess.run(SUDO + ["rm", "-rf", os.path.join(mount_point, "usr/bin/qemu-aarch64-static")], check=True)
+    mount_point = os.path.realpath(mount_point)
+    qemu_path = os.path.join(mount_point, "usr/bin/qemu-aarch64-static")
+    if os.path.exists(qemu_path):
+        subprocess.run(SUDO + ["rm", "-rf", qemu_path], check=False)
     for mp in ["dev/pts", "dev", "sys", "proc"]:
-        subprocess.run(SUDO + ["umount", os.path.join(mount_point, mp)], check=False)
-    subprocess.run(SUDO + ["umount", mount_point], check=False)
+        target = os.path.join(mount_point, mp)
+        if is_mounted(target):
+            subprocess.run(SUDO + ["umount", "-l", target], check=False)
+    if is_mounted(mount_point):
+        subprocess.run(SUDO + ["umount", "-l", mount_point], check=False)
 
 def remove_files(mount_point="/mnt", remove_file_list="remove_file.txt"):
     if not os.path.exists(remove_file_list):
@@ -233,7 +334,9 @@ if __name__ == "__main__":
     parser.add_argument("--remove_file", help="File to remove from the chroot environment")
     parser.add_argument("--overlay", help="Overlay file to add to the chroot environment")
     parser.add_argument("--app", help="App file to add to the chroot environment")
+    parser.add_argument("--work-dir", default="/var/tmp/nanokvm_build_axp", help="Working directory for firmware modification (default: /var/tmp/nanokvm_build_axp)")
     args = parser.parse_args()
+    ensure_root_privileges()
 
     replacements = {}
     if args.dtb:
@@ -246,4 +349,4 @@ if __name__ == "__main__":
         replacements["u-boot_signed.bin"] = args.uboot
         replacements["u-boot_b_signed.bin"] = args.uboot
 
-    replace_axp(args.axp, replacements, args.output)
+    replace_axp(args.axp, replacements, args.output, work_dir=args.work_dir)

@@ -81,6 +81,24 @@ export const Relative = () => {
       event.preventDefault();
     }
 
+    let pendingDeltaX = 0;
+    let pendingDeltaY = 0;
+    let moveRafId: number | null = null;
+
+    function flushMouseMove() {
+      if (moveRafId !== null) {
+        cancelAnimationFrame(moveRafId);
+        moveRafId = null;
+      }
+      if (pendingDeltaX !== 0 || pendingDeltaY !== 0) {
+        const dx = pendingDeltaX;
+        const dy = pendingDeltaY;
+        pendingDeltaX = 0;
+        pendingDeltaY = 0;
+        handleMouseEvent({ type: 'move', deltaX: dx, deltaY: dy });
+      }
+    }
+
     // Mouse click event
     function handleMouseClick(event: MouseEvent) {
       disableEvent(event);
@@ -93,12 +111,14 @@ export const Relative = () => {
     // Mouse down event
     function handleMouseDown(e: MouseEvent) {
       disableEvent(e);
+      flushMouseMove();
       handleMouseEvent({ type: 'mousedown', button: e.button });
     }
 
     // Mouse up event
     function handleMouseUp(e: MouseEvent) {
       disableEvent(e);
+      flushMouseMove();
       handleMouseEvent({ type: 'mouseup', button: e.button });
     }
 
@@ -114,7 +134,12 @@ export const Relative = () => {
       const deltaY = Math.abs(y * window.devicePixelRatio) < 10 ? y * 2 : y;
       const delta = inverseRotateDelta(deltaX, deltaY, videoParameters.rotation);
 
-      handleMouseEvent({ type: 'move', deltaX: delta.x, deltaY: delta.y });
+      pendingDeltaX += delta.x;
+      pendingDeltaY += delta.y;
+
+      if (moveRafId === null) {
+        moveRafId = requestAnimationFrame(flushMouseMove);
+      }
     }
 
     // Mouse wheel event
@@ -130,6 +155,7 @@ export const Relative = () => {
         return;
       }
 
+      flushMouseMove();
       const deltaY = (e.deltaY > 0 ? 1 : -1) * scrollDirection;
       handleMouseEvent({ type: 'wheel', deltaY });
       lastScrollTimeRef.current = currentTime;
@@ -157,6 +183,7 @@ export const Relative = () => {
     }
 
     function releaseMouse(force = false) {
+      flushMouseMove();
       const mouse = mouseRef.current;
       const hadPressedButtons = mouse.hasPressedButtons;
       const report = mouse.reset();
@@ -179,6 +206,13 @@ export const Relative = () => {
     }
 
     return () => {
+      if (moveRafId !== null) {
+        cancelAnimationFrame(moveRafId);
+        moveRafId = null;
+      }
+      pendingDeltaX = 0;
+      pendingDeltaY = 0;
+
       releaseMouseAndExitPointerLock();
       unregisterMouseReleaseHandler();
 

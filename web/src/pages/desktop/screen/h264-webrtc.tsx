@@ -176,6 +176,15 @@ export const H264Webrtc = () => {
     };
 
     video.ontrack = (event) => {
+      const receiver = event.receiver;
+      if (receiver) {
+        if ('playoutDelayHint' in receiver) {
+          (receiver as any).playoutDelayHint = 0;
+        }
+        if ('jitterBufferTarget' in receiver) {
+          (receiver as any).jitterBufferTarget = 0;
+        }
+      }
       if (videoRef.current && event.track.kind === 'video') {
         videoRef.current.srcObject = new MediaStream([event.track]);
       }
@@ -226,7 +235,15 @@ export const H264Webrtc = () => {
         }
       };
 
-      video.addTransceiver('video', { direction: 'recvonly' });
+      const videoTransceiver = video.addTransceiver('video', { direction: 'recvonly' });
+      if (videoTransceiver?.receiver) {
+        if ('playoutDelayHint' in videoTransceiver.receiver) {
+          (videoTransceiver.receiver as any).playoutDelayHint = 0;
+        }
+        if ('jitterBufferTarget' in videoTransceiver.receiver) {
+          (videoTransceiver.receiver as any).jitterBufferTarget = 0;
+        }
+      }
       audio.addTransceiver('audio', { direction: 'sendrecv' });
 
       audioConnectionRef.current = audio;
