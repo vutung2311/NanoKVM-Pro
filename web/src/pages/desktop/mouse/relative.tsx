@@ -61,7 +61,7 @@ export const Relative = () => {
           report = mouse.buildButtonReport();
           break;
         case 'wheel':
-          report = mouse.buildReport(0, 0, event.deltaY);
+          report = mouse.buildReport(0, 0, event.deltaY, event.deltaX || 0);
           break;
         case 'move':
           report = mouse.buildReport(event.deltaX, event.deltaY);
@@ -146,7 +146,7 @@ export const Relative = () => {
     function handleMouseWheel(e: WheelEvent) {
       disableEvent(e);
 
-      if (Math.floor(e.deltaY) === 0) {
+      if (e.deltaY === 0 && e.deltaX === 0) {
         return;
       }
 
@@ -156,8 +156,9 @@ export const Relative = () => {
       }
 
       flushMouseMove();
-      const deltaY = (e.deltaY > 0 ? 1 : -1) * scrollDirection;
-      handleMouseEvent({ type: 'wheel', deltaY });
+      const deltaY = (e.deltaY !== 0 ? (e.deltaY > 0 ? 1 : -1) : 0) * scrollDirection;
+      const deltaX = (e.deltaX !== 0 ? (e.deltaX > 0 ? -1 : 1) : 0) * scrollDirection;
+      handleMouseEvent({ type: 'wheel', deltaY, deltaX });
       lastScrollTimeRef.current = currentTime;
     }
 

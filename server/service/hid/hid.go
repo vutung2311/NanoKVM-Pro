@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -13,6 +14,8 @@ type Hid struct {
 	g0         *os.File
 	g1         *os.File
 	g2         *os.File
+	legacyHid1 bool
+	legacyHid2 bool
 	kbMutex    sync.Mutex
 	mouseMutex sync.Mutex
 }
@@ -70,6 +73,8 @@ func (h *Hid) OpenNoLock() {
 }
 
 func (h *Hid) CloseNoLock() {
+	h.legacyHid1 = false
+	h.legacyHid2 = false
 	if h.g0 != nil {
 		_ = h.g0.Sync()
 		_ = h.g0.Close()
@@ -157,6 +162,26 @@ func (h *Hid) WriteHid1(data []byte) {
 	h.mouseMutex.Lock()
 	defer h.mouseMutex.Unlock()
 
+	var payload []byte
+	var buf [5]byte
+	if len(data) == 5 {
+		copy(buf[:], data)
+		payload = buf[:]
+	} else if len(data) == 4 {
+		copy(buf[:4], data)
+		if h.legacyHid1 {
+			payload = buf[:4]
+		} else {
+			payload = buf[:]
+		}
+	} else {
+		payload = data
+	}
+
+	if h.legacyHid1 && len(payload) == 5 {
+		payload = payload[:4]
+	}
+
 	if h.g1 == nil {
 		var err error
 		h.g1, err = os.OpenFile(HID1, os.O_WRONLY, 0o666)
@@ -168,24 +193,55 @@ func (h *Hid) WriteHid1(data []byte) {
 
 	deadline := time.Now().Add(50 * time.Millisecond)
 	_ = h.g1.SetWriteDeadline(deadline)
-	_, err := h.g1.Write(data)
+	_, err := h.g1.Write(payload)
 
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			log.Debugf("write to %s timeout (host not polling)", HID1)
 			return
 		}
+		recPayload := payload
+		// If gadget report_length is 4 (pre-reboot/legacy kernel gadget), fall back gracefully
+		if errors.Is(err, syscall.EINVAL) && len(payload) == 5 {
+			h.legacyHid1 = true
+			_ = h.g1.SetWriteDeadline(deadline)
+			if _, err4 := h.g1.Write(payload[:4]); err4 == nil {
+				log.Debugf("write to %s succeeded using legacy 4-byte fallback", HID1)
+				return
+			}
+			recPayload = payload[:4]
+		}
 		log.Warnf("write to %s failed (%s), recovering", HID1, err)
-		h.recoverFile(&h.g1, HID1, data, 50*time.Millisecond)
+		h.recoverFile(&h.g1, HID1, recPayload, 50*time.Millisecond)
 		return
 	}
 
-	log.Debugf("write to %s: %v", HID1, data)
+	log.Debugf("write to %s: %v", HID1, payload)
 }
 
 func (h *Hid) WriteHid2(data []byte) {
 	h.mouseMutex.Lock()
 	defer h.mouseMutex.Unlock()
+
+	var payload []byte
+	var buf [7]byte
+	if len(data) == 7 {
+		copy(buf[:], data)
+		payload = buf[:]
+	} else if len(data) == 6 {
+		copy(buf[:6], data)
+		if h.legacyHid2 {
+			payload = buf[:6]
+		} else {
+			payload = buf[:]
+		}
+	} else {
+		payload = data
+	}
+
+	if h.legacyHid2 && len(payload) == 7 {
+		payload = payload[:6]
+	}
 
 	if h.g2 == nil {
 		var err error
@@ -198,17 +254,28 @@ func (h *Hid) WriteHid2(data []byte) {
 
 	deadline := time.Now().Add(50 * time.Millisecond)
 	_ = h.g2.SetWriteDeadline(deadline)
-	_, err := h.g2.Write(data)
+	_, err := h.g2.Write(payload)
 
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			log.Debugf("write to %s timeout (host not polling)", HID2)
 			return
 		}
+		recPayload := payload
+		// If gadget report_length is 6 (pre-reboot/legacy kernel gadget), fall back gracefully
+		if errors.Is(err, syscall.EINVAL) && len(payload) == 7 {
+			h.legacyHid2 = true
+			_ = h.g2.SetWriteDeadline(deadline)
+			if _, err6 := h.g2.Write(payload[:6]); err6 == nil {
+				log.Debugf("write to %s succeeded using legacy 6-byte fallback", HID2)
+				return
+			}
+			recPayload = payload[:6]
+		}
 		log.Warnf("write to %s failed (%s), recovering", HID2, err)
-		h.recoverFile(&h.g2, HID2, data, 50*time.Millisecond)
+		h.recoverFile(&h.g2, HID2, recPayload, 50*time.Millisecond)
 		return
 	}
 
-	log.Debugf("write to %s: %v", HID2, data)
+	log.Debugf("write to %s: %v", HID2, payload)
 }
