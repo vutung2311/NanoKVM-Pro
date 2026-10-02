@@ -67,7 +67,7 @@ function initializeDecoder() {
   const init = {
     output: (frame: VideoFrame) => {
       frameQueue.enqueue(frame);
-      if (frameQueue.size >= 10) {
+      while (frameQueue.size > 2) {
         frameQueue.dequeue()?.close();
       }
 
@@ -107,6 +107,10 @@ function decode(isKeyFrame: boolean, timestamp: number, data: Uint8Array) {
 }
 
 function processFrameQueue() {
+  while (frameQueue.size > 1) {
+    frameQueue.dequeue()?.close();
+  }
+
   const frame = frameQueue.dequeue();
   if (frame) {
     renderFrame(frame);

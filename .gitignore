@@ -22,6 +22,15 @@ NanoKVM-Server
 support/scripts/NanoKVM-Pro
 support/toolchains/
 support/base_firmware/*.axp
+support/base_firmware/*.tar.gz
+support/base_firmware/axp_temp/
+support/base_firmware/nanokvm_pro_*
+*.deb
+*.ext4
+*.fat32
+*.img
+*.img.xz
+mount_point/
 support/scripts/build_image/overlay/kvmapp/server/NanoKVM-Server
 support/scripts/build_image/overlay/kvmapp/server/web/
 

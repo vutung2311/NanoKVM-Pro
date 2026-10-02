@@ -97,13 +97,13 @@ func (m *WebRTCManager) sendVideoStream() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := stream.SetCPUAffinity(0); err != nil {
-		return
+		log.Warnf("failed to set video CPU affinity: %s", err)
 	}
 
 	screen := common.GetScreen()
 	vision := common.GetKvmVision()
 
-	duration := time.Second / time.Duration(120)
+	duration := stream.GetStreamTickerDuration()
 	ticker := time.NewTicker(duration)
 	defer ticker.Stop()
 
@@ -147,7 +147,7 @@ func (m *WebRTCManager) sendAudioStream() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := stream.SetCPUAffinity(1); err != nil {
-		return
+		log.Warnf("failed to set audio CPU affinity: %s", err)
 	}
 
 	vision := common.GetKvmVision()
