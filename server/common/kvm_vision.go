@@ -1,3 +1,5 @@
+//go:build arm64 && cgo
+
 package common
 
 /*
@@ -14,35 +16,6 @@ import (
 	"NanoKVM-Server/config"
 
 	log "github.com/sirupsen/logrus"
-)
-
-type KvmVision struct {
-	StreamType uint8
-}
-
-const (
-	RATE_CONTROL_CBR uint8 = iota
-	RATE_CONTROL_VBR
-)
-
-const (
-	IMG_MJPEG_TYPE uint8 = iota
-	IMG_H264_TYPE_SPS
-	IMG_H264_TYPE_PPS
-	IMG_H264_TYPE_IF
-	IMG_H264_TYPE_PF
-	IMG_H265_TYPE_SPS
-	IMG_H265_TYPE_PPS
-	IMG_H265_TYPE_IF
-	IMG_H265_TYPE_PF
-)
-
-const (
-	STREAM_TYPE_MJPEG = iota
-	STREAM_TYPE_H264_WEBRTC
-	STREAM_TYPE_H264_DIRECT
-	STREAM_TYPE_H265_WEBRTC
-	STREAM_TYPE_H265_DIRECT
 )
 
 var (
