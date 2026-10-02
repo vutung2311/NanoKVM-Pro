@@ -137,7 +137,7 @@ export const Absolute = () => {
     function handleWheel(e: WheelEvent) {
       disableEvent(e);
 
-      if (Math.floor(e.deltaY) === 0) {
+      if (e.deltaY === 0 && e.deltaX === 0) {
         return;
       }
 
@@ -148,8 +148,9 @@ export const Absolute = () => {
 
       flushMouseMove();
       lastPosRef.current = getCoordinate(e);
-      const deltaY = (e.deltaY > 0 ? 1 : -1) * scrollDirection;
-      handleMouseEvent({ type: 'wheel', deltaY });
+      const deltaY = (e.deltaY !== 0 ? (e.deltaY > 0 ? 1 : -1) : 0) * scrollDirection;
+      const deltaX = (e.deltaX !== 0 ? (e.deltaX > 0 ? -1 : 1) : 0) * scrollDirection;
+      handleMouseEvent({ type: 'wheel', deltaY, deltaX });
       lastScrollTimeRef.current = currentTime;
     }
 
@@ -229,7 +230,7 @@ export const Absolute = () => {
           report = mouse.buildButtonReport(lastPosRef.current.x, lastPosRef.current.y);
           break;
         case 'wheel':
-          report = mouse.buildReport(lastPosRef.current.x, lastPosRef.current.y, event.deltaY);
+          report = mouse.buildReport(lastPosRef.current.x, lastPosRef.current.y, event.deltaY, event.deltaX || 0);
           break;
         case 'move':
           report = mouse.buildReport(event.x, event.y);

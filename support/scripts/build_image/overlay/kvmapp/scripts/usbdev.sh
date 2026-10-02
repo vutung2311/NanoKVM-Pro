@@ -261,7 +261,30 @@ enable_hid_wakeup_on_write() {
     fi
 }
 
+write_report_desc() {
+    local target="$1"
+    local bin_file="$2"
+    local hex="$3"
+
+    if [ -n "$bin_file" ] && [ -f "$bin_file" ]; then
+        cat "$bin_file" > "$target"
+    elif command -v xxd >/dev/null 2>&1; then
+        echo "$hex" | xxd -r -p > "$target"
+    elif [ -x /usr/bin/printf ]; then
+        /usr/bin/printf "$(echo "$hex" | sed 's/../\\x&/g')" > "$target"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c "import sys; sys.stdout.buffer.write(bytes.fromhex('$hex'))" > "$target"
+    elif command -v perl >/dev/null 2>&1; then
+        perl -e "print pack('H*', '$hex')" > "$target"
+    fi
+}
+
 hid_start() {
+    if [ -d "/sys/kernel/config/usb_gadget/g0" ]; then
+        echo "USB gadget g0 already exists; stopping first..."
+        hid_stop
+    fi
+
     echo "usb mode: device"
     set_usb_role "device"
 
@@ -363,7 +386,7 @@ hid_start() {
     echo 1 > functions/hid.GS0/protocol
     echo 1 > functions/hid.GS0/subclass
     echo 8 > functions/hid.GS0/report_length
-    echo -ne \\x05\\x01\\x09\\x06\\xa1\\x01\\x05\\x07\\x19\\xe0\\x29\\xe7\\x15\\x00\\x25\\x01\\x75\\x01\\x95\\x08\\x81\\x02\\x95\\x01\\x75\\x08\\x81\\x03\\x95\\x05\\x75\\x01\\x05\\x08\\x19\\x01\\x29\\x05\\x91\\x02\\x95\\x01\\x75\\x03\\x91\\x03\\x95\\x06\\x75\\x08\\x15\\x00\\x25\\xE7\\x05\\x07\\x19\\x00\\x29\\xE7\\x81\\x00\\xc0 > functions/hid.GS0/report_desc
+    write_report_desc "functions/hid.GS0/report_desc" "${SCRIPTS_ROOT:-/kvmapp/scripts}/hid_keyboard.bin" "05010906a101050719e029e71500250175019508810295017508810395057501050819012905910295017503910395067508150025e70507190029e78100c0"
     ln -s functions/hid.GS0 configs/c.1
 
     # mouse
@@ -372,8 +395,8 @@ hid_start() {
     enable_hid_wakeup_on_write "hid.GS1"
     echo 2 > functions/hid.GS1/protocol
     echo 1 > functions/hid.GS1/subclass
-    echo 4 > functions/hid.GS1/report_length
-    echo -ne \\x5\\x1\\x9\\x2\\xa1\\x1\\x9\\x1\\xa1\\x0\\x5\\x9\\x19\\x1\\x29\\x3\\x15\\x0\\x25\\x1\\x95\\x3\\x75\\x1\\x81\\x2\\x95\\x1\\x75\\x5\\x81\\x3\\x5\\x1\\x9\\x30\\x9\\x31\\x9\\x38\\x15\\x81\\x25\\x7f\\x75\\x8\\x95\\x3\\x81\\x6\\xc0\\xc0 > functions/hid.GS1/report_desc
+    echo 5 > functions/hid.GS1/report_length
+    write_report_desc "functions/hid.GS1/report_desc" "${SCRIPTS_ROOT:-/kvmapp/scripts}/hid_mouse_rel.bin" "05010902a1010901a1000509190129081500250195087501810205010930093109381581257f750895038106c0050c0a38021581257f750895018106c0"
     ln -s functions/hid.GS1 configs/c.1
 
     # touchpad / absolute mouse (enabled by default; protocol 0 / subclass 0 prevents phantom joystick js0 on Linux)
@@ -383,8 +406,8 @@ hid_start() {
         enable_hid_wakeup_on_write "hid.GS2"
         echo 0 > functions/hid.GS2/protocol
         echo 0 > functions/hid.GS2/subclass
-        echo 6 > functions/hid.GS2/report_length
-        echo -ne \\x05\\x01\\x09\\x02\\xa1\\x01\\x09\\x01\\xa1\\x00\\x05\\x09\\x19\\x01\\x29\\x05\\x15\\x00\\x25\\x01\\x95\\x05\\x75\\x01\\x81\\x02\\x95\\x01\\x75\\x03\\x81\\x01\\x05\\x01\\x09\\x30\\x09\\x31\\x15\\x00\\x26\\xff\\x7f\\x35\\x00\\x46\\xff\\x7f\\x75\\x10\\x95\\x02\\x81\\x02\\x05\\x01\\x09\\x38\\x15\\x81\\x25\\x7f\\x35\\x00\\x45\\x00\\x75\\x08\\x95\\x01\\x81\\x06\\xc0\\xc0 > functions/hid.GS2/report_desc
+        echo 7 > functions/hid.GS2/report_length
+        write_report_desc "functions/hid.GS2/report_desc" "${SCRIPTS_ROOT:-/kvmapp/scripts}/hid_mouse_abs.bin" "05010902a1010901a10005091901290815002501950875018102050109300931150026ff7f350046ff7f751095028102050109381581257f35004500750895018106c0050c0a38021581257f750895018106c0"
         ln -s functions/hid.GS2 configs/c.1
     fi
 
@@ -480,6 +503,11 @@ hid_start() {
 }
 
 hid_only_start() {
+    if [ -d "/sys/kernel/config/usb_gadget/g0" ]; then
+        echo "USB gadget g0 already exists; stopping first..."
+        hid_stop
+    fi
+
     echo "usb mode: device (HID-only)"
     set_usb_role "device"
 
@@ -540,7 +568,7 @@ hid_only_start() {
     echo 1 > functions/hid.GS0/protocol
     echo 1 > functions/hid.GS0/subclass
     echo 8 > functions/hid.GS0/report_length
-    echo -ne \\x05\\x01\\x09\\x06\\xa1\\x01\\x05\\x07\\x19\\xe0\\x29\\xe7\\x15\\x00\\x25\\x01\\x75\\x01\\x95\\x08\\x81\\x02\\x95\\x01\\x75\\x08\\x81\\x03\\x95\\x05\\x75\\x01\\x05\\x08\\x19\\x01\\x29\\x05\\x91\\x02\\x95\\x01\\x75\\x03\\x91\\x03\\x95\\x06\\x75\\x08\\x15\\x00\\x25\\xE7\\x05\\x07\\x19\\x00\\x29\\xE7\\x81\\x00\\xc0 > functions/hid.GS0/report_desc
+    write_report_desc "functions/hid.GS0/report_desc" "${SCRIPTS_ROOT:-/kvmapp/scripts}/hid_keyboard.bin" "05010906a101050719e029e71500250175019508810295017508810395057501050819012905910295017503910395067508150025e70507190029e78100c0"
     ln -s functions/hid.GS0 configs/c.1
 
     mkdir functions/hid.GS1
@@ -548,8 +576,8 @@ hid_only_start() {
     enable_hid_wakeup_on_write "hid.GS1"
     echo 2 > functions/hid.GS1/protocol
     echo 1 > functions/hid.GS1/subclass
-    echo 4 > functions/hid.GS1/report_length
-    echo -ne \\x5\\x1\\x9\\x2\\xa1\\x1\\x9\\x1\\xa1\\x0\\x5\\x9\\x19\\x1\\x29\\x3\\x15\\x0\\x25\\x1\\x95\\x3\\x75\\x1\\x81\\x2\\x95\\x1\\x75\\x5\\x81\\x3\\x5\\x1\\x9\\x30\\x9\\x31\\x9\\x38\\x15\\x81\\x25\\x7f\\x75\\x8\\x95\\x3\\x81\\x6\\xc0\\xc0 > functions/hid.GS1/report_desc
+    echo 5 > functions/hid.GS1/report_length
+    write_report_desc "functions/hid.GS1/report_desc" "${SCRIPTS_ROOT:-/kvmapp/scripts}/hid_mouse_rel.bin" "05010902a1010901a1000509190129081500250195087501810205010930093109381581257f750895038106c0050c0a38021581257f750895018106c0"
     ln -s functions/hid.GS1 configs/c.1
 
     # touchpad / absolute mouse (enabled by default; protocol 0 / subclass 0 prevents phantom joystick js0 on Linux)
@@ -559,8 +587,8 @@ hid_only_start() {
         enable_hid_wakeup_on_write "hid.GS2"
         echo 0 > functions/hid.GS2/protocol
         echo 0 > functions/hid.GS2/subclass
-        echo 6 > functions/hid.GS2/report_length
-        echo -ne \\x05\\x01\\x09\\x02\\xa1\\x01\\x09\\x01\\xa1\\x00\\x05\\x09\\x19\\x01\\x29\\x05\\x15\\x00\\x25\\x01\\x95\\x05\\x75\\x01\\x81\\x02\\x95\\x01\\x75\\x03\\x81\\x01\\x05\\x01\\x09\\x30\\x09\\x31\\x15\\x00\\x26\\xff\\x7f\\x35\\x00\\x46\\xff\\x7f\\x75\\x10\\x95\\x02\\x81\\x02\\x05\\x01\\x09\\x38\\x15\\x81\\x25\\x7f\\x35\\x00\\x45\\x00\\x75\\x08\\x95\\x01\\x81\\x06\\xc0\\xc0 > functions/hid.GS2/report_desc
+        echo 7 > functions/hid.GS2/report_length
+        write_report_desc "functions/hid.GS2/report_desc" "${SCRIPTS_ROOT:-/kvmapp/scripts}/hid_mouse_abs.bin" "05010902a1010901a10005091901290815002501950875018102050109300931150026ff7f350046ff7f751095028102050109381581257f35004500750895018106c0050c0a38021581257f750895018106c0"
         ln -s functions/hid.GS2 configs/c.1
     fi
 

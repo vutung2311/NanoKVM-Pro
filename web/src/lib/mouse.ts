@@ -54,13 +54,24 @@ export class MouseReportRelative {
    * @param deltaX X movement (-127 to 127)
    * @param deltaY Y movement (-127 to 127)
    * @param wheel Scroll wheel (-127 to 127, negative = down)
+   * @param hwheel Horizontal scroll wheel (-127 to 127, positive = right)
    */
-  buildReport(deltaX: number, deltaY: number, wheel: number = 0): Uint8Array {
-    const report = new Uint8Array(4);
+  buildReport(deltaX: number, deltaY: number, wheel: number = 0, hwheel: number = 0): Uint8Array {
+    if (hwheel === 0) {
+      const report = new Uint8Array(4);
+      report[0] = this.buttons;
+      report[1] = this.clamp(Math.round(deltaX), -127, 127) & 0xff;
+      report[2] = this.clamp(Math.round(deltaY), -127, 127) & 0xff;
+      report[3] = this.clamp(Math.round(wheel), -127, 127) & 0xff;
+      return report;
+    }
+
+    const report = new Uint8Array(5);
     report[0] = this.buttons;
     report[1] = this.clamp(Math.round(deltaX), -127, 127) & 0xff;
     report[2] = this.clamp(Math.round(deltaY), -127, 127) & 0xff;
     report[3] = this.clamp(Math.round(wheel), -127, 127) & 0xff;
+    report[4] = this.clamp(Math.round(hwheel), -127, 127) & 0xff;
     return report;
   }
 
@@ -68,12 +79,12 @@ export class MouseReportRelative {
    * Build button-only report (no movement)
    */
   buildButtonReport(): Uint8Array {
-    return this.buildReport(0, 0, 0);
+    return this.buildReport(0, 0, 0, 0);
   }
 
   reset(): Uint8Array {
     this.buttons = 0;
-    return this.buildReport(0, 0, 0);
+    return this.buildReport(0, 0, 0, 0);
   }
 
   private clamp(value: number, min: number, max: number): number {
@@ -82,13 +93,14 @@ export class MouseReportRelative {
 }
 
 /**
- * Absolute Mouse Report (6 bytes)
+ * Absolute Mouse Report (6 or 7 bytes)
  * Used with /dev/hidg2 (absolute mouse/tablet)
  *
  * Byte 0: Buttons
  * Byte 1-2: X position (0 to 32767, Little Endian)
  * Byte 3-4: Y position (0 to 32767, Little Endian)
- * Byte 5: Wheel
+ * Byte 5: Vertical Wheel (-127 to 127)
+ * Byte 6: Horizontal Wheel (-127 to 127, omitted when 0)
  */
 export class MouseReportAbsolute {
   private buttons: number = 0;
@@ -110,9 +122,25 @@ export class MouseReportAbsolute {
    * @param x X position (0 to 32767)
    * @param y Y position (0 to 32767)
    * @param wheel Scroll wheel (-127 to 127)
+   * @param hwheel Horizontal scroll wheel (-127 to 127, positive = right)
    */
-  buildReport(x: number, y: number, wheel: number = 0): Uint8Array {
-    const report = new Uint8Array(6);
+  buildReport(x: number, y: number, wheel: number = 0, hwheel: number = 0): Uint8Array {
+    if (hwheel === 0) {
+      const report = new Uint8Array(6);
+      const positionX = this.clamp(Math.round(x), 0, 0x7fff);
+      const positionY = this.clamp(Math.round(y), 0, 0x7fff);
+
+      report[0] = this.buttons;
+      report[1] = positionX & 0xff;
+      report[2] = (positionX >> 8) & 0xff;
+      report[3] = positionY & 0xff;
+      report[4] = (positionY >> 8) & 0xff;
+      report[5] = this.clamp(Math.round(wheel), -127, 127) & 0xff;
+
+      return report;
+    }
+
+    const report = new Uint8Array(7);
     const positionX = this.clamp(Math.round(x), 0, 0x7fff);
     const positionY = this.clamp(Math.round(y), 0, 0x7fff);
 
@@ -122,6 +150,7 @@ export class MouseReportAbsolute {
     report[3] = positionY & 0xff;
     report[4] = (positionY >> 8) & 0xff;
     report[5] = this.clamp(Math.round(wheel), -127, 127) & 0xff;
+    report[6] = this.clamp(Math.round(hwheel), -127, 127) & 0xff;
 
     return report;
   }
@@ -130,12 +159,12 @@ export class MouseReportAbsolute {
    * Build button-only report (keeps last position)
    */
   buildButtonReport(lastX: number, lastY: number): Uint8Array {
-    return this.buildReport(lastX, lastY, 0);
+    return this.buildReport(lastX, lastY, 0, 0);
   }
 
   reset(lastX: number = 0, lastY: number = 0): Uint8Array {
     this.buttons = 0;
-    return this.buildReport(lastX, lastY, 0);
+    return this.buildReport(lastX, lastY, 0, 0);
   }
 
   private clamp(value: number, min: number, max: number): number {
