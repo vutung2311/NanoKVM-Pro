@@ -22,21 +22,27 @@ export const Wifi = () => {
   const [verifyState, setVerifyState] = useState<VerifyState>('');
 
   useEffect(() => {
-    const pass = searchParams.get('p') || searchParams.get('P');
+    const urlSearch = new URLSearchParams(window.location.search);
+    const pass =
+      searchParams.get('p') ||
+      searchParams.get('P') ||
+      urlSearch.get('p') ||
+      urlSearch.get('P');
     if (pass) {
       verifyPassword(pass);
     }
   }, []);
 
   async function verifyPassword(password: string) {
-    if (verifying) return;
+    const trimmed = (password || '').trim();
+    if (!trimmed || verifying) return;
     setVerifying(true);
     setVerifyState('');
 
     try {
-      const rsp = await api.verifyApLogin(password);
+      const rsp = await api.verifyApLogin(trimmed);
       if (rsp?.code === 0) {
-        setApPassword(password);
+        setApPassword(trimmed);
         setIsAuthenticated(true);
       } else {
         setVerifyState(rsp?.code === -1 ? 'denied' : 'failed');
@@ -57,7 +63,7 @@ export const Wifi = () => {
   async function connect(values: any) {
     if (state === 'loading' || state === 'success') return;
 
-    const ssid = values.ssid;
+    const ssid = values.ssid ? values.ssid.trim() : '';
     const password = values.password;
     if (!ssid) {
       setState('');

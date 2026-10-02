@@ -282,6 +282,9 @@ EOF
     iptables -A FORWARD -i "$WIFI_IFACE" -o "$ETH_IFACE" -j ACCEPT
     iptables -A FORWARD -i "$ETH_IFACE" -o "$WIFI_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 
+    printf "%s" "$WIFI_PSW" > /tmp/ap.pass
+    touch /tmp/wifi_config
+
     debug_print "[wifi] access point activated - SSID: ${WIFI_SSID} | Password: ${WIFI_PSW}"
 }
 
@@ -291,6 +294,7 @@ stop_wifi_ap() {
     debug_print "[wifi] terminating ap services"
     pkill hostapd || true
     pkill udhcpd || true
+    rm -f /tmp/ap.pass /tmp/wifi_config || true
 
     debug_print "[wifi] cleaning network configuration"
     iptables -t nat -D POSTROUTING -o "$ETH_IFACE" -j MASQUERADE 2>/dev/null || true
@@ -1203,6 +1207,7 @@ case "$1" in
     rm -f "$WPA_CONF_FILE" || true
     rm -f "$PREVIOUS_WIFI_SAVE" || true
     rm -f "$PREVIOUS_WIFI" || true
+    rm -f /tmp/ap.pass /tmp/wifi_config || true
     ;;
 "check_previous_wifi")
     check_previous_wifi
