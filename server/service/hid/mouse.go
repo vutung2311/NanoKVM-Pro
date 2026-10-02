@@ -79,7 +79,7 @@ func (h *Hid) Mouse(queue <-chan []byte) {
 					if !ok {
 						break coalesceAbs
 					}
-					if len(nextEvent) == 6 && nextEvent[0] == latestAbs[0] {
+					if len(nextEvent) == 6 && nextEvent[0] == latestAbs[0] && nextEvent[5] == 0 && latestAbs[5] == 0 {
 						latestAbs = nextEvent
 					} else {
 						h.WriteHid2(latestAbs)

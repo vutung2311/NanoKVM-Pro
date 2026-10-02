@@ -376,13 +376,13 @@ hid_start() {
     echo -ne \\x5\\x1\\x9\\x2\\xa1\\x1\\x9\\x1\\xa1\\x0\\x5\\x9\\x19\\x1\\x29\\x3\\x15\\x0\\x25\\x1\\x95\\x3\\x75\\x1\\x81\\x2\\x95\\x1\\x75\\x5\\x81\\x3\\x5\\x1\\x9\\x30\\x9\\x31\\x9\\x38\\x15\\x81\\x25\\x7f\\x75\\x8\\x95\\x3\\x81\\x6\\xc0\\xc0 > functions/hid.GS1/report_desc
     ln -s functions/hid.GS1 configs/c.1
 
-    # touchpad (only enabled if explicitly requested via /boot/usb.touchpad, avoids phantom joystick js0)
-    if [ -e /boot/usb.touchpad ]; then
+    # touchpad / absolute mouse (enabled by default; protocol 0 / subclass 0 prevents phantom joystick js0 on Linux)
+    if [ ! -e /boot/usb.no_touchpad ] || [ -e /boot/usb.touchpad ]; then
         mkdir functions/hid.GS2
         echo 1 > functions/hid.GS2/no_out_endpoint
         enable_hid_wakeup_on_write "hid.GS2"
-        echo 2 > functions/hid.GS2/protocol
-        echo 1 > functions/hid.GS2/subclass
+        echo 0 > functions/hid.GS2/protocol
+        echo 0 > functions/hid.GS2/subclass
         echo 6 > functions/hid.GS2/report_length
         echo -ne \\x05\\x01\\x09\\x02\\xa1\\x01\\x09\\x01\\xa1\\x00\\x05\\x09\\x19\\x01\\x29\\x05\\x15\\x00\\x25\\x01\\x95\\x05\\x75\\x01\\x81\\x02\\x95\\x01\\x75\\x03\\x81\\x01\\x05\\x01\\x09\\x30\\x09\\x31\\x15\\x00\\x26\\xff\\x7f\\x35\\x00\\x46\\xff\\x7f\\x75\\x10\\x95\\x02\\x81\\x02\\x05\\x01\\x09\\x38\\x15\\x81\\x25\\x7f\\x35\\x00\\x45\\x00\\x75\\x08\\x95\\x01\\x81\\x06\\xc0\\xc0 > functions/hid.GS2/report_desc
         ln -s functions/hid.GS2 configs/c.1
@@ -552,14 +552,15 @@ hid_only_start() {
     echo -ne \\x5\\x1\\x9\\x2\\xa1\\x1\\x9\\x1\\xa1\\x0\\x5\\x9\\x19\\x1\\x29\\x3\\x15\\x0\\x25\\x1\\x95\\x3\\x75\\x1\\x81\\x2\\x95\\x1\\x75\\x5\\x81\\x3\\x5\\x1\\x9\\x30\\x9\\x31\\x9\\x38\\x15\\x81\\x25\\x7f\\x75\\x8\\x95\\x3\\x81\\x6\\xc0\\xc0 > functions/hid.GS1/report_desc
     ln -s functions/hid.GS1 configs/c.1
 
-    if [ -e /boot/usb.touchpad ]; then
+    # touchpad / absolute mouse (enabled by default; protocol 0 / subclass 0 prevents phantom joystick js0 on Linux)
+    if [ ! -e /boot/usb.no_touchpad ] || [ -e /boot/usb.touchpad ]; then
         mkdir functions/hid.GS2
         echo 1 > functions/hid.GS2/no_out_endpoint
         enable_hid_wakeup_on_write "hid.GS2"
-        echo 2 > functions/hid.GS2/protocol
-        echo 1 > functions/hid.GS2/subclass
+        echo 0 > functions/hid.GS2/protocol
+        echo 0 > functions/hid.GS2/subclass
         echo 6 > functions/hid.GS2/report_length
-        echo -ne \\x05\\x01\\x09\\x02\\xa1\\x01\\x09\\x01\\xa1\\x00\\x05\\x09\\x19\\x01\\x29\\x03\\x15\\x00\\x25\\x01\\x95\\x03\\x75\\x01\\x81\\x02\\x95\\x01\\x75\\x05\\x81\\x01\\x05\\x01\\x09\\x30\\x09\\x31\\x15\\x00\\x26\\xff\\x7f\\x35\\x00\\x46\\xff\\x7f\\x75\\x10\\x95\\x02\\x81\\x02\\x05\\x01\\x09\\x38\\x15\\x81\\x25\\x7f\\x35\\x00\\x45\\x00\\x75\\x08\\x95\\x01\\x81\\x06\\xc0\\xc0 > functions/hid.GS2/report_desc
+        echo -ne \\x05\\x01\\x09\\x02\\xa1\\x01\\x09\\x01\\xa1\\x00\\x05\\x09\\x19\\x01\\x29\\x05\\x15\\x00\\x25\\x01\\x95\\x05\\x75\\x01\\x81\\x02\\x95\\x01\\x75\\x03\\x81\\x01\\x05\\x01\\x09\\x30\\x09\\x31\\x15\\x00\\x26\\xff\\x7f\\x35\\x00\\x46\\xff\\x7f\\x75\\x10\\x95\\x02\\x81\\x02\\x05\\x01\\x09\\x38\\x15\\x81\\x25\\x7f\\x35\\x00\\x45\\x00\\x75\\x08\\x95\\x01\\x81\\x06\\xc0\\xc0 > functions/hid.GS2/report_desc
         ln -s functions/hid.GS2 configs/c.1
     fi
 

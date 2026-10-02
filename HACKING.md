@@ -49,8 +49,10 @@
   * Added bounded-timeout queue writes for keyboard events in [`client.go`](file:///home/tung/Git/nanokvm-pro/server/service/ws/client.go) to prevent stuck keys on saturated channels.
   * Hardened [`hid.go`](file:///home/tung/Git/nanokvm-pro/server/service/hid/hid.go) with automatic descriptor recovery on fatal driver errors/UDC rebinds.
   * Added unit tests in [`mouse_test.go`](file:///home/tung/Git/nanokvm-pro/server/service/hid/mouse_test.go).
-- [x] **Step 4: Fix Phantom Joystick (`js0`):**
-  * Updated [`usbdev.sh`](file:///home/tung/Git/nanokvm-pro/support/scripts/build_image/overlay/kvmapp/scripts/usbdev.sh) to make `hid.GS2` (touchpad) opt-in via `/boot/usb.touchpad`, delivering a clean standard Keyboard + Relative Mouse interface.
+- [x] **Step 4: Fix Phantom Joystick (`js0`) & Restore Absolute Mouse:**
+  * Updated [`usbdev.sh`](file:///home/tung/Git/nanokvm-pro/support/scripts/build_image/overlay/kvmapp/scripts/usbdev.sh) to configure `hid.GS2` (absolute mouse/touchpad) with `protocol 0` and `subclass 0` (non-boot generic pointer), resolving Linux host phantom joystick (`js0`) detection without disabling the interface.
+  * Ensured `/dev/hidg2` is created and enabled by default (with opt-out via `/boot/usb.no_touchpad`) so that the default Absolute Mouse mode in the WebUI operates out of the box.
+  * Added requestAnimationFrame throttling to absolute mouse in [`absolute.tsx`](file:///home/tung/Git/nanokvm-pro/web/src/pages/desktop/mouse/absolute.tsx) and preserved scroll wheel deltas across coalesced events in [`mouse.go`](file:///home/tung/Git/nanokvm-pro/server/service/hid/mouse.go).
 - [x] **Step 5: On-Demand Services & Optimization:**
   * Maintained Mouse Jiggler feature with persistence via `/etc/kvm/mouse-jiggler`, executing conditionally with zero idle overhead when toggled off.
   * Configured Computer Use Agent (CUA / OCR) for on-demand activation on first use (spawns via WebUI API `/api/extensions/assistant/start` and auto-terminates on tab close), saving ~200MB RAM at boot.
@@ -71,5 +73,10 @@
 - [x] **Step 9: Upstream Synchronization & Rebase Automation:**
   * Added `make check-upstream` to inspect new commits in `sipeed/NanoKVM-Pro:main` without modifying the workspace.
   * Added `make rebase-upstream` (alias: `make sync-upstream`) to cleanly replay custom commits on top of latest upstream releases with pre-flight working tree validation and conflict guidance.
+- [x] **Step 10: Mouse Pipeline Hardening & Host Test Decoupling:**
+  * Decoupled CGO hardware video encoder dependencies with build tags (`common/kvm_vision.go` vs `common/kvm_vision_stub.go`) so `go test ./...` passes natively on host dev machines.
+  * Hardened mouse WebSocket ingress in [`client.go`](file:///home/tung/Git/nanokvm-pro/server/service/ws/client.go) with bounded timeouts to prevent click/release drop during transient USB write saturation.
+  * Added off-canvas window drag release synchronization in [`absolute.tsx`](file:///home/tung/Git/nanokvm-pro/web/src/pages/desktop/mouse/absolute.tsx) to flush pending rAF moves and emit `mouseup` at exact coordinates.
+  * Expanded [`mouse_test.go`](file:///home/tung/Git/nanokvm-pro/server/service/hid/mouse_test.go) with tests for consecutive wheel events, burst coordinate convergence, and invalid event handling.
 
 

@@ -166,7 +166,7 @@ func (h *Hid) WriteHid1(data []byte) {
 		}
 	}
 
-	deadline := time.Now().Add(15 * time.Millisecond)
+	deadline := time.Now().Add(50 * time.Millisecond)
 	_ = h.g1.SetWriteDeadline(deadline)
 	_, err := h.g1.Write(data)
 
@@ -176,7 +176,7 @@ func (h *Hid) WriteHid1(data []byte) {
 			return
 		}
 		log.Warnf("write to %s failed (%s), recovering", HID1, err)
-		h.recoverFile(&h.g1, HID1, data, 15*time.Millisecond)
+		h.recoverFile(&h.g1, HID1, data, 50*time.Millisecond)
 		return
 	}
 
@@ -196,7 +196,7 @@ func (h *Hid) WriteHid2(data []byte) {
 		}
 	}
 
-	deadline := time.Now().Add(15 * time.Millisecond)
+	deadline := time.Now().Add(50 * time.Millisecond)
 	_ = h.g2.SetWriteDeadline(deadline)
 	_, err := h.g2.Write(data)
 
@@ -206,7 +206,7 @@ func (h *Hid) WriteHid2(data []byte) {
 			return
 		}
 		log.Warnf("write to %s failed (%s), recovering", HID2, err)
-		h.recoverFile(&h.g2, HID2, data, 15*time.Millisecond)
+		h.recoverFile(&h.g2, HID2, data, 50*time.Millisecond)
 		return
 	}
 

@@ -12,7 +12,10 @@ let releaseHandler: ReleaseHandler | null = null;
 const pendingReleases = new Map<MouseInterface, Uint8Array>();
 
 function buildMouseMessage(report: Uint8Array): Uint8Array {
-  return new Uint8Array([MessageEvent.Mouse, ...report]);
+  const msg = new Uint8Array(1 + report.length);
+  msg[0] = MessageEvent.Mouse;
+  msg.set(report, 1);
+  return msg;
 }
 
 function flushPendingMouseReleases(): boolean {

@@ -106,8 +106,8 @@ func (c *Client) Close() {
 func writeQueue(queue chan []byte, data []byte) {
 	select {
 	case queue <- data:
-	default:
-		log.Debug("mouse queue full, dropping delta packet to prevent websocket stall")
+	case <-time.After(20 * time.Millisecond):
+		log.Debug("mouse queue full, timed out to prevent websocket stall")
 	}
 	jiggler.GetJiggler().Update()
 }
