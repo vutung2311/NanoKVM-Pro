@@ -72,20 +72,38 @@ export const Absolute = () => {
     screen.addEventListener('contextmenu', disableEvent);
     window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('mouseup', handleWindowMouseUp);
+    window.addEventListener('mousemove', handleWindowMouseMove);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     const unregisterMouseReleaseHandler = registerMouseReleaseHandler(releaseMouse);
 
-    if (isBigScreen) {
-      screen.addEventListener('touchstart', handleTouchStart);
-      screen.addEventListener('touchmove', handleTouchMove);
-      screen.addEventListener('touchend', handleTouchEnd);
-      screen.addEventListener('touchcancel', handleTouchCancel);
+    screen.addEventListener('touchstart', handleTouchStart);
+    screen.addEventListener('touchmove', handleTouchMove);
+    screen.addEventListener('touchend', handleTouchEnd);
+    screen.addEventListener('touchcancel', handleTouchCancel);
+
+    let pendingClientPos: { clientX: number; clientY: number } | null = null;
+    let moveRafId: number | null = null;
+
+    function flushMouseMove() {
+      if (moveRafId !== null) {
+        cancelAnimationFrame(moveRafId);
+        moveRafId = null;
+      }
+      if (pendingClientPos !== null) {
+        const pos = pendingClientPos;
+        pendingClientPos = null;
+        const coord = getCoordinate(pos);
+        if (coord.x !== lastPosRef.current.x || coord.y !== lastPosRef.current.y) {
+          handleMouseEvent({ type: 'move', x: coord.x, y: coord.y });
+        }
+      }
     }
 
     // Mouse down event
     function handleMouseDown(e: MouseEvent) {
       disableEvent(e);
+      flushMouseMove();
       lastPosRef.current = getCoordinate(e);
       handleMouseEvent({ type: 'mousedown', button: e.button });
     }
@@ -93,6 +111,7 @@ export const Absolute = () => {
     // Mouse up event
     function handleMouseUp(e: MouseEvent) {
       disableEvent(e);
+      flushMouseMove();
       lastPosRef.current = getCoordinate(e);
       handleMouseEvent({ type: 'mouseup', button: e.button });
     }
@@ -100,8 +119,18 @@ export const Absolute = () => {
     // Mouse move event
     function handleMouseMove(e: MouseEvent) {
       disableEvent(e);
-      const { x, y } = getCoordinate(e);
-      handleMouseEvent({ type: 'move', x, y });
+      pendingClientPos = { clientX: e.clientX, clientY: e.clientY };
+
+      if (moveRafId === null) {
+        moveRafId = requestAnimationFrame(flushMouseMove);
+      }
+    }
+
+    // Window mouse move event during active drag
+    function handleWindowMouseMove(e: MouseEvent) {
+      if (mouseRef.current.hasPressedButtons) {
+        handleMouseMove(e);
+      }
     }
 
     // Mouse wheel event
@@ -117,6 +146,8 @@ export const Absolute = () => {
         return;
       }
 
+      flushMouseMove();
+      lastPosRef.current = getCoordinate(e);
       const deltaY = (e.deltaY > 0 ? 1 : -1) * scrollDirection;
       handleMouseEvent({ type: 'wheel', deltaY });
       lastScrollTimeRef.current = currentTime;
@@ -129,6 +160,8 @@ export const Absolute = () => {
     function handleWindowMouseUp(e: MouseEvent) {
       // Screen mouseup stops propagation; this catches releases outside the video element.
       if (mouseRef.current.hasPressedButtons) {
+        flushMouseMove();
+        lastPosRef.current = getCoordinate(e);
         handleMouseEvent({ type: 'mouseup', button: e.button });
       }
     }
@@ -148,6 +181,7 @@ export const Absolute = () => {
     }
 
     function releaseMouse(options: ReleaseMouseOptions = {}) {
+      flushMouseMove();
       const { force = false, cancelTouchSequence = true } = options;
       const mouse = mouseRef.current;
       const hadPressedButtons = mouse.hasPressedButtons;
@@ -342,14 +376,17 @@ export const Absolute = () => {
       }
 
       if (isDraggingRef.current || isLongPressRef.current) {
-        const { x, y } = getCoordinate(touch);
-        handleMouseEvent({ type: 'move', x, y });
+        pendingClientPos = { clientX: touch.clientX, clientY: touch.clientY };
+        if (moveRafId === null) {
+          moveRafId = requestAnimationFrame(flushMouseMove);
+        }
       }
     }
 
     // Mouse touch end event
     function handleTouchEnd(e: TouchEvent) {
       disableEvent(e);
+      flushMouseMove();
 
       activeTouchCountRef.current = e.touches.length;
 
@@ -406,7 +443,7 @@ export const Absolute = () => {
     }
 
     // get mouse coordinate
-    function getCoordinate(event: any) {
+    function getCoordinate(event: { clientX: number; clientY: number }) {
       const { x, y } = getCorrectedCoords(event.clientX, event.clientY);
 
       const finalX = Math.max(0, Math.min(1, x));
@@ -423,9 +460,11 @@ export const Absolute = () => {
       const rect = screen.getBoundingClientRect();
       const mediaSize = getMediaSize(screen);
 
-      if (!mediaSize) {
-        const x = (clientX - rect.left) / rect.width;
-        const y = (clientY - rect.top) / rect.height;
+      if (!mediaSize || rect.width <= 0 || rect.height <= 0) {
+        const width = rect.width || 1;
+        const height = rect.height || 1;
+        const x = (clientX - rect.left) / width;
+        const y = (clientY - rect.top) / height;
         return inverseRotatePoint(x, y, videoParameters.rotation);
       }
 
@@ -448,6 +487,10 @@ export const Absolute = () => {
         offsetX = (rect.width - renderedWidth) / 2;
       }
 
+      if (renderedWidth <= 0 || renderedHeight <= 0) {
+        return { x: 0.5, y: 0.5 };
+      }
+
       const x = (clientX - rect.left - offsetX) / renderedWidth;
       const y = (clientY - rect.top - offsetY) / renderedHeight;
 
@@ -455,6 +498,12 @@ export const Absolute = () => {
     }
 
     return () => {
+      if (moveRafId !== null) {
+        cancelAnimationFrame(moveRafId);
+        moveRafId = null;
+      }
+      pendingClientPos = null;
+
       releaseMouse();
       unregisterMouseReleaseHandler();
 
@@ -470,6 +519,7 @@ export const Absolute = () => {
       screen.removeEventListener('touchcancel', handleTouchCancel);
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('mouseup', handleWindowMouseUp);
+      window.removeEventListener('mousemove', handleWindowMouseMove);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [isBigScreen, scrollDirection, scrollInterval, videoMode, videoParameters.rotation]);

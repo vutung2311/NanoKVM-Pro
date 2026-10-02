@@ -146,3 +146,156 @@ func TestMouseMixedRelativeAndAbsolute(t *testing.T) {
 	}
 }
 
+func TestMouseAbsoluteCoalescingAndWheel(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+	defer r.Close()
+
+	h := &Hid{g2: w}
+	queue := make(chan []byte, 10)
+
+	// Pre-queue 2 move events, 1 wheel event, and 1 final move event
+	queue <- []byte{0, 10, 0, 10, 0, 0}
+	queue <- []byte{0, 20, 0, 20, 0, 0}
+	queue <- []byte{0, 20, 0, 20, 0, 1} // wheel scroll
+	queue <- []byte{0, 30, 0, 30, 0, 0} // subsequent move
+	close(queue)
+
+	h.Mouse(queue)
+	_ = w.Close()
+
+	buf := make([]byte, 32)
+	n, _ := r.Read(buf)
+	// Expected 3 reports:
+	// 1. Move coalesced to [0, 20, 0, 20, 0, 0] (6 bytes)
+	// 2. Wheel event [0, 20, 0, 20, 0, 1] (6 bytes)
+	// 3. Final move [0, 30, 0, 30, 0, 0] (6 bytes)
+	if n != 18 {
+		t.Fatalf("expected 18 bytes (3 reports), got %d bytes: %v", n, buf[:n])
+	}
+	if buf[5] != 0 || buf[11] != 1 || buf[17] != 0 {
+		t.Errorf("wheel preservation mismatch: reports=%v", buf[:n])
+	}
+}
+
+func TestMouseAbsoluteClickAndReleaseNotDropped(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+	defer r.Close()
+
+	h := &Hid{g2: w}
+	queue := make(chan []byte, 10)
+
+	// Pre-queue mouse move, button 1 down, and button 1 release
+	queue <- []byte{0, 10, 0, 10, 0, 0}
+	queue <- []byte{1, 10, 0, 10, 0, 0}
+	queue <- []byte{0, 10, 0, 10, 0, 0}
+	close(queue)
+
+	h.Mouse(queue)
+	_ = w.Close()
+
+	buf := make([]byte, 32)
+	n, _ := r.Read(buf)
+	if n != 18 {
+		t.Fatalf("expected 18 bytes (3 reports), got %d bytes: %v", n, buf[:n])
+	}
+	if buf[0] != 0 || buf[6] != 1 || buf[12] != 0 {
+		t.Errorf("button transition mismatch: reports=%v", buf[:n])
+	}
+}
+
+func TestMouseConsecutiveWheelReportsNotDropped(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+	defer r.Close()
+
+	h := &Hid{g2: w}
+	queue := make(chan []byte, 10)
+
+	// Queue 3 consecutive scroll ticks without intervening moves
+	queue <- []byte{0, 10, 0, 10, 0, 1}
+	queue <- []byte{0, 10, 0, 10, 0, 1}
+	queue <- []byte{0, 10, 0, 10, 0, 0xff} // scroll down (-1)
+	close(queue)
+
+	h.Mouse(queue)
+	_ = w.Close()
+
+	buf := make([]byte, 32)
+	n, _ := r.Read(buf)
+	if n != 18 {
+		t.Fatalf("expected 18 bytes (3 reports), got %d bytes: %v", n, buf[:n])
+	}
+	if buf[5] != 1 || buf[11] != 1 || buf[17] != 0xff {
+		t.Errorf("consecutive wheel mismatch: reports=%v", buf[:n])
+	}
+}
+
+func TestMouseAbsoluteMovePreservesLatestCoordinate(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+	defer r.Close()
+
+	h := &Hid{g2: w}
+	queue := make(chan []byte, 20)
+
+	// Queue a burst of 5 moves with the same button state
+	for i := 1; i <= 5; i++ {
+		queue <- []byte{0, byte(i * 10), 0, byte(i * 10), 0, 0}
+	}
+	close(queue)
+
+	h.Mouse(queue)
+	_ = w.Close()
+
+	buf := make([]byte, 32)
+	n, _ := r.Read(buf)
+	// All 5 moves should coalesce into a single report with the latest coordinate (50, 50)
+	if n != 6 {
+		t.Fatalf("expected 6 bytes (1 coalesced report), got %d bytes: %v", n, buf[:n])
+	}
+	if buf[1] != 50 || buf[3] != 50 {
+		t.Errorf("expected final coordinates (50, 50), got x=%d y=%d", buf[1], buf[3])
+	}
+}
+
+func TestMouseInvalidEventIgnoredGracefully(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+	defer r.Close()
+
+	h := &Hid{g2: w}
+	queue := make(chan []byte, 10)
+
+	// Queue valid move, malformed packet (len 3), and another valid move
+	queue <- []byte{0, 10, 0, 10, 0, 0}
+	queue <- []byte{0, 1, 2} // invalid
+	queue <- []byte{0, 20, 0, 20, 0, 0}
+	close(queue)
+
+	h.Mouse(queue)
+	_ = w.Close()
+
+	buf := make([]byte, 32)
+	n, _ := r.Read(buf)
+	// Expected 2 valid 6-byte reports
+	if n != 12 {
+		t.Fatalf("expected 12 bytes (2 reports), got %d bytes: %v", n, buf[:n])
+	}
+	if buf[1] != 10 || buf[7] != 20 {
+		t.Errorf("unexpected reports: %v", buf[:n])
+	}
+}
+
+
