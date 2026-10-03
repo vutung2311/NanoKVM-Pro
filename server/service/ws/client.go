@@ -106,8 +106,14 @@ func (c *Client) Close() {
 func writeQueue(queue chan []byte, data []byte) {
 	select {
 	case queue <- data:
-	case <-time.After(20 * time.Millisecond):
-		log.Debug("mouse queue full, timed out to prevent websocket stall")
+	default:
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case queue <- data:
+			timer.Stop()
+		case <-timer.C:
+			log.Debug("mouse queue full, dropping event to prevent latency stall")
+		}
 	}
 	jiggler.GetJiggler().Update()
 }
@@ -115,8 +121,14 @@ func writeQueue(queue chan []byte, data []byte) {
 func writeKeyboardQueue(queue chan []byte, data []byte) {
 	select {
 	case queue <- data:
-	case <-time.After(50 * time.Millisecond):
-		log.Warn("keyboard queue full, timed out to prevent websocket stall")
+	default:
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case queue <- data:
+			timer.Stop()
+		case <-timer.C:
+			log.Warn("keyboard queue full, timed out to prevent websocket stall")
+		}
 	}
 	jiggler.GetJiggler().Update()
 }

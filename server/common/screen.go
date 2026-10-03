@@ -9,6 +9,8 @@ import (
 )
 
 type Screen struct {
+	mutex sync.Mutex
+
 	Width  uint16
 	Height uint16
 
@@ -65,9 +67,16 @@ func GetScreen() *Screen {
 }
 
 func (s *Screen) Check() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	if time.Since(s.lastCheck) >= 5*time.Second {
-		s.Width = readSize(WidthPath)
-		s.Height = readSize(HeightPath)
+		w := readSize(WidthPath)
+		h := readSize(HeightPath)
+		if (w > 0 && h > 0) || (s.Width == 0 && s.Height == 0) {
+			s.Width = w
+			s.Height = h
+		}
 		s.lastCheck = time.Now()
 	}
 

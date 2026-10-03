@@ -93,8 +93,11 @@ func (s *Streamer) run() {
 			continue
 		}
 
-		data, result := vision.ReadH264(screen.Width, screen.Height, screen.BitRate)
+		screen.Check()
+		bufPtr := stream.FrameBufferPool.Get().(*[]byte)
+		data, result := vision.ReadH264Into(screen.Width, screen.Height, screen.BitRate, bufPtr)
 		if result < 0 || len(data) == 0 {
+			stream.PutFrameBuffer(bufPtr)
 			continue
 		}
 
@@ -105,7 +108,9 @@ func (s *Streamer) run() {
 
 		timestamp := time.Since(startTime).Microseconds()
 
-		if err := s.send(clients, isKeyFrame, timestamp, data); err != nil {
+		err := s.send(clients, isKeyFrame, timestamp, data)
+		stream.PutFrameBuffer(bufPtr)
+		if err != nil {
 			continue
 		}
 
@@ -124,9 +129,9 @@ func (s *Streamer) send(clients []*websocket.Conn, isKeyFrame byte, timestamp in
 		return err
 	}
 
-	tsBytes := make([]byte, 8)
-	binary.LittleEndian.PutUint64(tsBytes, uint64(timestamp))
-	if _, err := buf.Write(tsBytes); err != nil {
+	var tsBytes [8]byte
+	binary.LittleEndian.PutUint64(tsBytes[:], uint64(timestamp))
+	if _, err := buf.Write(tsBytes[:]); err != nil {
 		log.Errorf("failed to write timestamp: %s", err)
 		return err
 	}
@@ -137,10 +142,12 @@ func (s *Streamer) send(clients []*websocket.Conn, isKeyFrame byte, timestamp in
 	}
 
 	for _, client := range clients {
+		_ = client.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
 		if err := client.WriteMessage(websocket.BinaryMessage, buf.Bytes()); err != nil {
 			log.Errorf("failed to write message to client %s: %s.", client.RemoteAddr(), err)
 
 			s.removeClient(client)
+			_ = client.Close()
 		}
 	}
 

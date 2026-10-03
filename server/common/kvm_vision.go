@@ -65,7 +65,7 @@ func (k *KvmVision) SetRateControl(mode uint8) int {
 	return result
 }
 
-func (k *KvmVision) ReadMjpeg(width uint16, height uint16, quality uint16) (data []byte, result int) {
+func (k *KvmVision) ReadMjpegInto(width uint16, height uint16, quality uint16, outBuf *[]byte) (data []byte, result int) {
 	var (
 		kvmData  *C.uint8_t
 		dataSize C.uint32_t
@@ -81,17 +81,30 @@ func (k *KvmVision) ReadMjpeg(width uint16, height uint16, quality uint16) (data
 	))
 	if result < 0 {
 		log.Errorf("failed to read MJPEG: %v", result)
-		return
+		return nil, result
 	}
 	if kvmData == nil || dataSize == 0 {
-		return
+		return nil, result
 	}
 
-	data = C.GoBytes(unsafe.Pointer(kvmData), C.int(dataSize))
-	return
+	n := int(dataSize)
+	if outBuf != nil {
+		if cap(*outBuf) < n {
+			*outBuf = make([]byte, n)
+		}
+		*outBuf = (*outBuf)[:n]
+		copy(*outBuf, unsafe.Slice((*byte)(unsafe.Pointer(kvmData)), n))
+		return *outBuf, result
+	}
+
+	return C.GoBytes(unsafe.Pointer(kvmData), C.int(dataSize)), result
 }
 
-func (k *KvmVision) ReadH264(width uint16, height uint16, bitRate uint16) (data []byte, result int) {
+func (k *KvmVision) ReadMjpeg(width uint16, height uint16, quality uint16) (data []byte, result int) {
+	return k.ReadMjpegInto(width, height, quality, nil)
+}
+
+func (k *KvmVision) ReadH264Into(width uint16, height uint16, bitRate uint16, outBuf *[]byte) (data []byte, result int) {
 	var (
 		kvmData  *C.uint8_t
 		dataSize C.uint32_t
@@ -107,17 +120,30 @@ func (k *KvmVision) ReadH264(width uint16, height uint16, bitRate uint16) (data 
 	))
 	if result < 0 {
 		log.Errorf("failed to read H.264: %d", result)
-		return
+		return nil, result
 	}
 	if kvmData == nil || dataSize == 0 {
-		return
+		return nil, result
 	}
 
-	data = C.GoBytes(unsafe.Pointer(kvmData), C.int(dataSize))
-	return
+	n := int(dataSize)
+	if outBuf != nil {
+		if cap(*outBuf) < n {
+			*outBuf = make([]byte, n)
+		}
+		*outBuf = (*outBuf)[:n]
+		copy(*outBuf, unsafe.Slice((*byte)(unsafe.Pointer(kvmData)), n))
+		return *outBuf, result
+	}
+
+	return C.GoBytes(unsafe.Pointer(kvmData), C.int(dataSize)), result
 }
 
-func (k *KvmVision) ReadH265(width uint16, height uint16, bitRate uint16) (data []byte, result int) {
+func (k *KvmVision) ReadH264(width uint16, height uint16, bitRate uint16) (data []byte, result int) {
+	return k.ReadH264Into(width, height, bitRate, nil)
+}
+
+func (k *KvmVision) ReadH265Into(width uint16, height uint16, bitRate uint16, outBuf *[]byte) (data []byte, result int) {
 	var (
 		kvmData  *C.uint8_t
 		dataSize C.uint32_t
@@ -133,17 +159,30 @@ func (k *KvmVision) ReadH265(width uint16, height uint16, bitRate uint16) (data 
 	))
 	if result < 0 {
 		log.Errorf("failed to read H.265: %d", result)
-		return
+		return nil, result
 	}
 	if kvmData == nil || dataSize == 0 {
-		return
+		return nil, result
 	}
 
-	data = C.GoBytes(unsafe.Pointer(kvmData), C.int(dataSize))
-	return
+	n := int(dataSize)
+	if outBuf != nil {
+		if cap(*outBuf) < n {
+			*outBuf = make([]byte, n)
+		}
+		*outBuf = (*outBuf)[:n]
+		copy(*outBuf, unsafe.Slice((*byte)(unsafe.Pointer(kvmData)), n))
+		return *outBuf, result
+	}
+
+	return C.GoBytes(unsafe.Pointer(kvmData), C.int(dataSize)), result
 }
 
-func (k *KvmVision) ReadAudio() (data []byte, result int) {
+func (k *KvmVision) ReadH265(width uint16, height uint16, bitRate uint16) (data []byte, result int) {
+	return k.ReadH265Into(width, height, bitRate, nil)
+}
+
+func (k *KvmVision) ReadAudioInto(outBuf *[]byte) (data []byte, result int) {
 	var (
 		kvmData  *C.uint8_t
 		dataSize C.uint32_t
@@ -152,14 +191,27 @@ func (k *KvmVision) ReadAudio() (data []byte, result int) {
 	result = int(C.kvmv_read_audio(&kvmData, &dataSize))
 	if result < 0 {
 		log.Errorf("failed to read audio: %d", result)
-		return
+		return nil, result
 	}
 	if kvmData == nil || dataSize == 0 {
-		return
+		return nil, result
 	}
 
-	data = C.GoBytes(unsafe.Pointer(kvmData), C.int(dataSize))
-	return
+	n := int(dataSize)
+	if outBuf != nil {
+		if cap(*outBuf) < n {
+			*outBuf = make([]byte, n)
+		}
+		*outBuf = (*outBuf)[:n]
+		copy(*outBuf, unsafe.Slice((*byte)(unsafe.Pointer(kvmData)), n))
+		return *outBuf, result
+	}
+
+	return C.GoBytes(unsafe.Pointer(kvmData), C.int(dataSize)), result
+}
+
+func (k *KvmVision) ReadAudio() (data []byte, result int) {
+	return k.ReadAudioInto(nil)
 }
 
 func (k *KvmVision) SetFps(fps uint8) int {

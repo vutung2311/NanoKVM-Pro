@@ -1,7 +1,9 @@
 package mjpeg
 
 import (
+	"bytes"
 	"fmt"
+	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -15,20 +17,24 @@ import (
 )
 
 type Streamer struct {
-	mutex   sync.RWMutex
-	clients map[*gin.Context]bool
-	running int32
+	mutex          sync.Mutex
+	clients        map[*gin.Context]bool
+	clientSnapshot atomic.Pointer[[]*gin.Context]
+	running        int32
 }
 
 func NewStreamer() *Streamer {
-	return &Streamer{
+	s := &Streamer{
 		clients: make(map[*gin.Context]bool),
 	}
+	s.updateClientSnapshotLocked()
+	return s
 }
 
 func (s *Streamer) AddClient(c *gin.Context) {
 	s.mutex.Lock()
 	s.clients[c] = true
+	s.updateClientSnapshotLocked()
 	s.mutex.Unlock()
 
 	common.GetKvmVision().SetStreamType(common.STREAM_TYPE_MJPEG)
@@ -42,29 +48,31 @@ func (s *Streamer) AddClient(c *gin.Context) {
 func (s *Streamer) RemoveClient(c *gin.Context) {
 	s.mutex.Lock()
 	delete(s.clients, c)
-	count := len(s.clients)
+	count := s.updateClientSnapshotLocked()
 	s.mutex.Unlock()
 
 	log.Debugf("mjpeg connection removed, remaining clients: %d", count)
 }
 
-func (s *Streamer) getClients() []*gin.Context {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
+func (s *Streamer) updateClientSnapshotLocked() int {
 	clients := make([]*gin.Context, 0, len(s.clients))
-	for c := range s.clients {
-		clients = append(clients, c)
+	for client := range s.clients {
+		clients = append(clients, client)
 	}
+	s.clientSnapshot.Store(&clients)
+	return len(clients)
+}
 
-	return clients
+func (s *Streamer) getClients() []*gin.Context {
+	clients := s.clientSnapshot.Load()
+	if clients == nil {
+		return nil
+	}
+	return *clients
 }
 
 func (s *Streamer) getClientCount() int {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-
-	return len(s.clients)
+	return len(s.getClients())
 }
 
 func (s *Streamer) run() {
@@ -87,43 +95,66 @@ func (s *Streamer) run() {
 			continue
 		}
 
-		data, result := vision.ReadMjpeg(screen.Width, screen.Height, screen.Quality)
+		screen.Check()
+		bufPtr := stream.FrameBufferPool.Get().(*[]byte)
+		data, result := vision.ReadMjpegInto(screen.Width, screen.Height, screen.Quality, bufPtr)
 		if result < 0 || len(data) == 0 {
+			stream.PutFrameBuffer(bufPtr)
 			continue
 		}
 
 		clients := s.getClients()
-		for _, client := range clients {
-			if err := writeFrame(client, data); err != nil {
-				log.Errorf("failed to write mjpeg frame for client %s: %s", client.Request.RemoteAddr, err)
-				s.RemoveClient(client)
-			}
-		}
+		s.send(clients, data)
+		stream.PutFrameBuffer(bufPtr)
 
 		stream.GetFrameRateCounter().Update()
 	}
 }
 
-func writeFrame(c *gin.Context, data []byte) (err error) {
+func (s *Streamer) send(clients []*gin.Context, data []byte) {
+	if len(clients) == 0 {
+		return
+	}
+
+	buf := stream.BufferPool.Get().(*bytes.Buffer)
+	defer stream.BufferPool.Put(buf)
+	buf.Reset()
+
+	buf.WriteString("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ")
+	buf.WriteString(strconv.Itoa(len(data)))
+	buf.WriteString("\r\n\r\n")
+	buf.Write(data)
+	buf.WriteString("\r\n")
+
+	frameBytes := buf.Bytes()
+	for _, client := range clients {
+		if err := writeClientFrame(client, frameBytes); err != nil {
+			addr := "unknown"
+			if client.Request != nil {
+				addr = client.Request.RemoteAddr
+			}
+			log.Errorf("failed to write mjpeg frame for client %s: %s", addr, err)
+			s.RemoveClient(client)
+		}
+	}
+}
+
+func writeClientFrame(c *gin.Context, frameBytes []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = c.Request.Context().Err()
+			if c.Request != nil && c.Request.Context() != nil {
+				err = c.Request.Context().Err()
+			}
 			if err == nil {
-				err = fmt.Errorf("panic recovered in writeFrame: %v", r)
+				err = fmt.Errorf("panic recovered in writeClientFrame: %v", r)
 			}
 		}
 	}()
 
-	header := "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + strconv.Itoa(len(data)) + "\r\n\r\n"
-	if _, err = c.Writer.WriteString(header); err != nil {
-		return err
-	}
+	rc := http.NewResponseController(c.Writer)
+	_ = rc.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
 
-	if _, err = c.Writer.Write(data); err != nil {
-		return err
-	}
-
-	if _, err = c.Writer.Write([]byte("\r\n")); err != nil {
+	if _, err = c.Writer.Write(frameBytes); err != nil {
 		return err
 	}
 
