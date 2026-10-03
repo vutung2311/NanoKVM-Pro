@@ -208,3 +208,41 @@ func TestGetSetHdmiPassthroughAPI(t *testing.T) {
 		t.Errorf("expected fallback enabled=false, got true")
 	}
 }
+
+func TestSetHdmiPassthroughPersistFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tempDir, cleanup := setupTestPaths(t)
+	defer cleanup()
+
+	_ = os.WriteFile(LT6911LoopoutPower, []byte("on\n"), 0644)
+	_ = os.WriteFile(LT6911HdmiPower, []byte("1\n"), 0644)
+
+	// Parent "directory" is a regular file, so the save fails even when running as root.
+	blocker := filepath.Join(tempDir, "blocker")
+	_ = os.WriteFile(blocker, []byte("x"), 0644)
+	HdmiPassthroughConfigFile = filepath.Join(blocker, "hdmi_passthrough")
+
+	bodyBytes, _ := json.Marshal(proto.SetHdmiPassthroughReq{Enabled: false})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/vm/hdmi/passthrough", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	(&Service{}).SetHdmiPassthrough(c)
+
+	var resp struct {
+		Code int `json:"code"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Code != -3 {
+		t.Errorf("expected code -3 on persist failure, got %d", resp.Code)
+	}
+
+	// Hardware change was still applied.
+	loopout, _ := os.ReadFile(LT6911LoopoutPower)
+	if strings.TrimSpace(string(loopout)) != "0" {
+		t.Errorf("expected loopout '0' (applied), got %q", string(loopout))
+	}
+}

@@ -107,6 +107,8 @@ func (s *Service) SetHdmiPassthrough(c *gin.Context) {
 
 	if writeErr := saveHdmiPassthroughConfig(configVal); writeErr != nil {
 		log.Errorf("failed to save HDMI passthrough config: %s", writeErr)
+		rsp.ErrRsp(c, -3, "HDMI passthrough applied, but failed to save setting (will revert on reboot)")
+		return
 	}
 
 	time.Sleep(10 * time.Millisecond)

@@ -90,12 +90,21 @@ export const Relative = () => {
         cancelAnimationFrame(moveRafId);
         moveRafId = null;
       }
-      if (pendingDeltaX !== 0 || pendingDeltaY !== 0) {
-        const dx = pendingDeltaX;
-        const dy = pendingDeltaY;
-        pendingDeltaX = 0;
-        pendingDeltaY = 0;
-        handleMouseEvent({ type: 'move', deltaX: dx, deltaY: dy });
+
+      // Send whole pixels; keep the sub-pixel remainder for the next frame.
+      let dx = Math.round(pendingDeltaX);
+      let dy = Math.round(pendingDeltaY);
+      pendingDeltaX -= dx;
+      pendingDeltaY -= dy;
+
+      // A HID report carries at most ±127 per axis. Split large batches into
+      // several reports instead of clamping, so fast flicks don't lose distance.
+      while (dx !== 0 || dy !== 0) {
+        const stepX = Math.max(-127, Math.min(127, dx));
+        const stepY = Math.max(-127, Math.min(127, dy));
+        handleMouseEvent({ type: 'move', deltaX: stepX, deltaY: stepY });
+        dx -= stepX;
+        dy -= stepY;
       }
     }
 
