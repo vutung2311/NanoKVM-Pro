@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"NanoKVM-Server/common"
 	"NanoKVM-Server/config"
@@ -73,7 +74,14 @@ func run() {
 
 	if conf.Proto == "http" {
 		log.Printf("Starting HTTP server on %s\n", httpAddr)
-		if err := r.Run(httpAddr); err != nil {
+		srv := &http.Server{
+			Addr:              httpAddr,
+			Handler:           r,
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    1 << 20,
+		}
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
 	} else {
@@ -82,7 +90,14 @@ func run() {
 
 		go runRedirect(httpAddr, httpsAddr)
 
-		if err := r.RunTLS(httpsAddr, conf.Cert.Crt, conf.Cert.Key); err != nil {
+		srv := &http.Server{
+			Addr:              httpsAddr,
+			Handler:           r,
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    1 << 20,
+		}
+		if err := srv.ListenAndServeTLS(conf.Cert.Crt, conf.Cert.Key); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTPS server failed: %v", err)
 		}
 	}
@@ -104,7 +119,14 @@ func runRedirect(httpPort string, httpsPort string) {
 		http.Redirect(w, req, targetURL, http.StatusTemporaryRedirect)
 	})
 
-	if err := http.ListenAndServe(httpPort, handler); err != nil {
+	srv := &http.Server{
+		Addr:              httpPort,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    1 << 16,
+	}
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("HTTP redirect server failed: %v", err)
 	}
 }

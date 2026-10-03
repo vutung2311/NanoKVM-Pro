@@ -29,7 +29,15 @@ func (k *KvmVision) SetRateControl(mode uint8) int {
 	return 0
 }
 
+func (k *KvmVision) ReadMjpegInto(width uint16, height uint16, quality uint16, outBuf *[]byte) (data []byte, result int) {
+	return nil, -1
+}
+
 func (k *KvmVision) ReadMjpeg(width uint16, height uint16, quality uint16) (data []byte, result int) {
+	return nil, -1
+}
+
+func (k *KvmVision) ReadH264Into(width uint16, height uint16, bitRate uint16, outBuf *[]byte) (data []byte, result int) {
 	return nil, -1
 }
 
@@ -37,7 +45,15 @@ func (k *KvmVision) ReadH264(width uint16, height uint16, bitRate uint16) (data 
 	return nil, -1
 }
 
+func (k *KvmVision) ReadH265Into(width uint16, height uint16, bitRate uint16, outBuf *[]byte) (data []byte, result int) {
+	return nil, -1
+}
+
 func (k *KvmVision) ReadH265(width uint16, height uint16, bitRate uint16) (data []byte, result int) {
+	return nil, -1
+}
+
+func (k *KvmVision) ReadAudioInto(outBuf *[]byte) (data []byte, result int) {
 	return nil, -1
 }
 

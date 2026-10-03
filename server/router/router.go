@@ -39,7 +39,14 @@ func web(r *gin.Engine) {
 		c.Next()
 	})
 
-	r.Use(static.Serve("/", static.LocalFile(webPath, true)))
+	staticHandler := static.Serve("/", static.LocalFile(webPath, true))
+	r.Use(func(c *gin.Context) {
+		if c.Request.URL.Path == "/api" || strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.Next()
+			return
+		}
+		staticHandler(c)
+	})
 
 	r.GET("/kvm", func(c *gin.Context) {
 		c.Redirect(302, "/")
