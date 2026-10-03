@@ -266,7 +266,7 @@ release: build deb overlay $(OUTPUT_AXP) $(OUTPUT_IMG_XZ)
 # ------------------------------------------------------------------------------
 # Remote SSH Deployment Target
 # ------------------------------------------------------------------------------
-## Deploy updated deb packages directly to the device over SSH (usage: make deploy IP=<device-ip>)
+## Deploy updated NanoKVM-Server and Web UI deb package over SSH (usage: make deploy IP=<device-ip>)
 deploy: deb
 	@TARGET_IP="$${IP:-$${DEVICE_IP:-}}"; \
 	if [ -z "$$TARGET_IP" ]; then \
@@ -274,11 +274,25 @@ deploy: deb
 		echo -e "$(YELLOW)Usage: make deploy IP=<device-ip>  (or: make deploy DEVICE_IP=<device-ip>)$(RESET)"; \
 		exit 1; \
 	fi; \
-	echo -e "$(CYAN)==> Copying deb packages to root@$$TARGET_IP:/tmp/...$(RESET)"; \
+	echo -e "$(CYAN)==> Copying nanokvm package to root@$$TARGET_IP:/tmp/...$(RESET)"; \
+	scp $(DIST_DIR)/nanokvmpro_$(VERSION)_arm64.deb root@$$TARGET_IP:/tmp/; \
+	echo -e "$(CYAN)==> Installing nanokvm package and restarting service on $$TARGET_IP...$(RESET)"; \
+	ssh root@$$TARGET_IP "dpkg -i /tmp/nanokvmpro_$(VERSION)_arm64.deb && /kvmapp/scripts/usbdev.sh restart && systemctl restart nanokvm && rm -f /tmp/nanokvmpro_$(VERSION)_arm64.deb"; \
+	echo -e "$(GREEN)[✓] Deployment to $$TARGET_IP completed successfully!$(RESET)"
+
+## Deploy both nanokvm and low-level kvmcomm packages (WARNING: kvmcomm restarts video kernel drivers; requires reboot)
+deploy-all: deb
+	@TARGET_IP="$${IP:-$${DEVICE_IP:-}}"; \
+	if [ -z "$$TARGET_IP" ]; then \
+		echo -e "$(RED)Error: Target IP address not specified.$(RESET)"; \
+		echo -e "$(YELLOW)Usage: make deploy-all IP=<device-ip>$(RESET)"; \
+		exit 1; \
+	fi; \
+	echo -e "$(CYAN)==> Copying all deb packages to root@$$TARGET_IP:/tmp/...$(RESET)"; \
 	scp $(DIST_DIR)/nanokvmpro_$(VERSION)_arm64.deb $(DIST_DIR)/kvmcomm_$(VERSION)_arm64.deb root@$$TARGET_IP:/tmp/; \
 	echo -e "$(CYAN)==> Installing packages and restarting services on $$TARGET_IP...$(RESET)"; \
-	ssh root@$$TARGET_IP "dpkg -i /tmp/nanokvmpro_$(VERSION)_arm64.deb /tmp/kvmcomm_$(VERSION)_arm64.deb && /kvmapp/scripts/usbdev.sh restart && systemctl restart nanokvm kvmcomm && rm -f /tmp/*_arm64.deb"; \
-	echo -e "$(GREEN)[✓] Deployment to $$TARGET_IP completed successfully!$(RESET)"
+	ssh root@$$TARGET_IP "dpkg -i /tmp/nanokvmpro_$(VERSION)_arm64.deb /tmp/kvmcomm_$(VERSION)_arm64.deb && /kvmapp/scripts/usbdev.sh restart && systemctl restart nanokvm && rm -f /tmp/*_arm64.deb"; \
+	echo -e "$(GREEN)[✓] Full deployment to $$TARGET_IP completed successfully!$(RESET)"
 
 # ------------------------------------------------------------------------------
 # Git & Upstream Synchronization Targets

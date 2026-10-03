@@ -183,14 +183,18 @@ func connect(ssid string, password string) error {
 		done <- cmd.Wait()
 	}()
 
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+
 	select {
-	case <-time.After(30 * time.Second):
+	case <-timer.C:
 		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 			log.Errorf("failed to kill process group: %v", err)
 		}
 		_ = exec.Command(WiFiScript, "connect_stop").Run()
 		return errors.New("connect wifi timeout")
 	case err := <-done:
+		timer.Stop()
 		if err != nil {
 			log.Errorf("connect wifi err: %v, out: %s", err, out.String())
 			return err
