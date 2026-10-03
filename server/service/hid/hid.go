@@ -18,6 +18,12 @@ type Hid struct {
 	legacyHid2 bool
 	kbMutex    sync.Mutex
 	mouseMutex sync.Mutex
+
+	// One writer goroutine per device serializes every producer (all WS
+	// clients, paste, jiggler). Started lazily; see writer.go.
+	writersOnce sync.Once
+	kbInbox     chan hidMsg
+	mouseInbox  chan hidMsg
 }
 
 const (
@@ -111,7 +117,7 @@ func (h *Hid) Close() {
 	h.CloseNoLock()
 }
 
-func (h *Hid) recoverFile(filePtr **os.File, path string, data []byte, deadline time.Duration) {
+func (h *Hid) recoverFile(filePtr **os.File, path string, data []byte, deadline time.Duration) error {
 	if *filePtr != nil {
 		_ = (*filePtr).Close()
 		*filePtr = nil
@@ -119,16 +125,20 @@ func (h *Hid) recoverFile(filePtr **os.File, path string, data []byte, deadline 
 	f, err := os.OpenFile(path, os.O_WRONLY, 0o666)
 	if err != nil {
 		log.Debugf("reopen %s failed: %s", path, err)
-		return
+		return err
 	}
 	*filePtr = f
-	if len(data) > 0 {
-		_ = f.SetWriteDeadline(time.Now().Add(deadline))
-		_, _ = f.Write(data)
+	if len(data) == 0 {
+		return nil
 	}
+	_ = f.SetWriteDeadline(time.Now().Add(deadline))
+	_, err = f.Write(data)
+	return err
 }
 
-func (h *Hid) WriteHid0(data []byte) {
+// WriteHid0 writes a keyboard report. It returns nil once the report was
+// accepted by the gadget, or the error if it was not (e.g. host not polling).
+func (h *Hid) WriteHid0(data []byte) error {
 	h.kbMutex.Lock()
 	defer h.kbMutex.Unlock()
 
@@ -137,7 +147,7 @@ func (h *Hid) WriteHid0(data []byte) {
 		h.g0, err = os.OpenFile(HID0, os.O_WRONLY, 0o666)
 		if err != nil {
 			log.Debugf("reopen %s failed: %s", HID0, err)
-			return
+			return err
 		}
 	}
 
@@ -148,17 +158,19 @@ func (h *Hid) WriteHid0(data []byte) {
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			log.Debugf("write to %s timeout (host not polling)", HID0)
-			return
+			return err
 		}
 		log.Warnf("write to %s failed (%s), recovering", HID0, err)
-		h.recoverFile(&h.g0, HID0, data, 20*time.Millisecond)
-		return
+		return h.recoverFile(&h.g0, HID0, data, 20*time.Millisecond)
 	}
 
 	log.Debugf("write to %s: %v", HID0, data)
+	return nil
 }
 
-func (h *Hid) WriteHid1(data []byte) {
+// WriteHid1 writes a relative mouse report. It returns nil once the report was
+// accepted by the gadget, or the error if it was not (e.g. host not polling).
+func (h *Hid) WriteHid1(data []byte) error {
 	h.mouseMutex.Lock()
 	defer h.mouseMutex.Unlock()
 
@@ -187,7 +199,7 @@ func (h *Hid) WriteHid1(data []byte) {
 		h.g1, err = os.OpenFile(HID1, os.O_WRONLY, 0o666)
 		if err != nil {
 			log.Debugf("reopen %s failed: %s", HID1, err)
-			return
+			return err
 		}
 	}
 
@@ -198,7 +210,7 @@ func (h *Hid) WriteHid1(data []byte) {
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			log.Debugf("write to %s timeout (host not polling)", HID1)
-			return
+			return err
 		}
 		recPayload := payload
 		// If gadget report_length is 4 (pre-reboot/legacy kernel gadget), fall back gracefully
@@ -207,19 +219,21 @@ func (h *Hid) WriteHid1(data []byte) {
 			_ = h.g1.SetWriteDeadline(deadline)
 			if _, err4 := h.g1.Write(payload[:4]); err4 == nil {
 				log.Debugf("write to %s succeeded using legacy 4-byte fallback", HID1)
-				return
+				return nil
 			}
 			recPayload = payload[:4]
 		}
 		log.Warnf("write to %s failed (%s), recovering", HID1, err)
-		h.recoverFile(&h.g1, HID1, recPayload, 50*time.Millisecond)
-		return
+		return h.recoverFile(&h.g1, HID1, recPayload, 50*time.Millisecond)
 	}
 
 	log.Debugf("write to %s: %v", HID1, payload)
+	return nil
 }
 
-func (h *Hid) WriteHid2(data []byte) {
+// WriteHid2 writes an absolute mouse report. It returns nil once the report was
+// accepted by the gadget, or the error if it was not (e.g. host not polling).
+func (h *Hid) WriteHid2(data []byte) error {
 	h.mouseMutex.Lock()
 	defer h.mouseMutex.Unlock()
 
@@ -247,8 +261,8 @@ func (h *Hid) WriteHid2(data []byte) {
 		var err error
 		h.g2, err = os.OpenFile(HID2, os.O_WRONLY, 0o666)
 		if err != nil {
-			// HID2 is optional; if not present, drop silently
-			return
+			// HID2 is optional (touchpad may be disabled via /boot/usb.no_touchpad)
+			return err
 		}
 	}
 
@@ -259,7 +273,7 @@ func (h *Hid) WriteHid2(data []byte) {
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			log.Debugf("write to %s timeout (host not polling)", HID2)
-			return
+			return err
 		}
 		recPayload := payload
 		// If gadget report_length is 6 (pre-reboot/legacy kernel gadget), fall back gracefully
@@ -268,14 +282,14 @@ func (h *Hid) WriteHid2(data []byte) {
 			_ = h.g2.SetWriteDeadline(deadline)
 			if _, err6 := h.g2.Write(payload[:6]); err6 == nil {
 				log.Debugf("write to %s succeeded using legacy 6-byte fallback", HID2)
-				return
+				return nil
 			}
 			recPayload = payload[:6]
 		}
 		log.Warnf("write to %s failed (%s), recovering", HID2, err)
-		h.recoverFile(&h.g2, HID2, recPayload, 50*time.Millisecond)
-		return
+		return h.recoverFile(&h.g2, HID2, recPayload, 50*time.Millisecond)
 	}
 
 	log.Debugf("write to %s: %v", HID2, payload)
+	return nil
 }

@@ -21,8 +21,6 @@ func NewClient(ws *websocket.Conn) *Client {
 	client := &Client{
 		ws:            ws,
 		hid:           hid.GetHid(),
-		keyboard:      make(chan []byte, 200),
-		mouse:         make(chan []byte, 200),
 		lastHeartbeat: time.Time{},
 	}
 
@@ -33,9 +31,6 @@ func NewClient(ws *websocket.Conn) *Client {
 
 func (c *Client) Start() {
 	defer c.Close()
-
-	go c.hid.Keyboard(c.keyboard)
-	go c.hid.Mouse(c.mouse)
 
 	_ = c.Read()
 }
@@ -60,9 +55,11 @@ func (c *Client) Read() error {
 		case Heartbeat:
 			c.UpdateHeartbeat()
 		case KeyboardEvent:
-			writeKeyboardQueue(c.keyboard, data[1:])
+			c.hid.SubmitKeyboard(data[1:])
+			jiggler.GetJiggler().Update()
 		case MouseEvent:
-			writeQueue(c.mouse, data[1:])
+			c.hid.SubmitMouse(data[1:])
+			jiggler.GetJiggler().Update()
 		}
 	}
 }
@@ -96,45 +93,10 @@ func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		_ = c.ws.Close()
 
-		close(c.keyboard)
-		close(c.mouse)
+		// The browser may have vanished mid-press (network drop, crash): make
+		// sure nothing stays held on the host.
+		c.hid.ReleaseAll()
 
 		log.Debug("websocket disconnected")
 	})
-}
-
-func writeQueue(queue chan []byte, data []byte) {
-	select {
-	case queue <- data:
-	default:
-		// Queue saturated: evict oldest stale position to admit newest coordinate
-		select {
-		case <-queue:
-		default:
-		}
-		select {
-		case queue <- data:
-		default:
-			log.Debug("mouse queue full, dropping event to prevent latency stall")
-		}
-	}
-	jiggler.GetJiggler().Update()
-}
-
-func writeKeyboardQueue(queue chan []byte, data []byte) {
-	select {
-	case queue <- data:
-	default:
-		// Queue saturated: evict oldest keystroke to admit newest event
-		select {
-		case <-queue:
-		default:
-		}
-		select {
-		case queue <- data:
-		default:
-			log.Warn("keyboard queue full, dropping event to prevent latency stall")
-		}
-	}
-	jiggler.GetJiggler().Update()
 }
