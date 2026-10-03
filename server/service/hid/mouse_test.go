@@ -29,17 +29,42 @@ func TestClampInt8(t *testing.T) {
 	}
 }
 
-func TestWriteRelativeChunksZero(t *testing.T) {
-	h := &Hid{}
-	// Should not panic on zero deltas even if g1 is nil
-	h.writeRelativeChunks(0, 0, 0, 0, 0)
-	h.writeRelativeChunks(1, 0, 0, 0, 0)
+func TestWriteRelativeZeroMotionSendsButtons(t *testing.T) {
+	r, w := newPipe(t)
+	h := &Hid{g1: w}
+
+	e := mouseEntry{buttons: 1}
+	if err := h.writeRelative(&e); err != nil {
+		t.Fatalf("writeRelative: %v", err)
+	}
+	got := readExactly(t, r, 5)
+	if string(got) != string([]byte{1, 0, 0, 0, 0}) {
+		t.Fatalf("got %v, want [1 0 0 0 0]", got)
+	}
 }
 
-func TestWriteRelativeChunksLarge(t *testing.T) {
-	h := &Hid{}
-	// Test that chunking handles large deltas (>127) safely without infinite loop
-	h.writeRelativeChunks(0, 300, -250, 50, -40)
+func TestWriteRelativeSplitsLargeDeltas(t *testing.T) {
+	r, w := newPipe(t)
+	h := &Hid{g1: w}
+
+	e := mouseEntry{buttons: 2, dx: 300, dy: -250, wheel: 50, hwheel: -40}
+	if err := h.writeRelative(&e); err != nil {
+		t.Fatalf("writeRelative: %v", err)
+	}
+	if e.dx != 0 || e.dy != 0 || e.wheel != 0 || e.hwheel != 0 {
+		t.Fatalf("entry not fully consumed: %+v", e)
+	}
+
+	m127 := byte(0x81) // int8(-127)
+	want := []byte{
+		2, 127, m127, 50, byte(0xd8), // -40
+		2, 127, byte(0x85), 0, 0, // -123
+		2, 46, 0, 0, 0,
+	}
+	got := readExactly(t, r, len(want))
+	if string(got) != string(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
 }
 
 func TestMouseClickAndReleaseNotDropped(t *testing.T) {
@@ -57,7 +82,7 @@ func TestMouseClickAndReleaseNotDropped(t *testing.T) {
 	queue <- []byte{0, 0, 0, 0, 0}
 	close(queue)
 
-	h.Mouse(queue)
+	runMouse(h, queue)
 	_ = w.Close()
 
 	buf := make([]byte, 16)
@@ -93,7 +118,7 @@ func TestMouseRelativeCoalescing(t *testing.T) {
 	queue <- []byte{0, 5, 0xf6, 0, 0}
 	close(queue)
 
-	h.Mouse(queue)
+	runMouse(h, queue)
 	_ = w.Close()
 
 	buf := make([]byte, 16)
@@ -129,7 +154,7 @@ func TestMouseMixedRelativeAndAbsolute(t *testing.T) {
 	queue <- []byte{0, 0x10, 0x20, 0x30, 0x40, 0}
 	close(queue)
 
-	h.Mouse(queue)
+	runMouse(h, queue)
 	_ = w1.Close()
 	_ = w2.Close()
 
@@ -163,7 +188,7 @@ func TestMouseAbsoluteCoalescingAndWheel(t *testing.T) {
 	queue <- []byte{0, 30, 0, 30, 0, 0, 0} // subsequent move
 	close(queue)
 
-	h.Mouse(queue)
+	runMouse(h, queue)
 	_ = w.Close()
 
 	buf := make([]byte, 32)
@@ -196,7 +221,7 @@ func TestMouseAbsoluteClickAndReleaseNotDropped(t *testing.T) {
 	queue <- []byte{0, 10, 0, 10, 0, 0, 0}
 	close(queue)
 
-	h.Mouse(queue)
+	runMouse(h, queue)
 	_ = w.Close()
 
 	buf := make([]byte, 32)
@@ -225,7 +250,7 @@ func TestMouseConsecutiveWheelReportsNotDropped(t *testing.T) {
 	queue <- []byte{0, 10, 0, 10, 0, 0xff, 0} // scroll down (-1)
 	close(queue)
 
-	h.Mouse(queue)
+	runMouse(h, queue)
 	_ = w.Close()
 
 	buf := make([]byte, 32)
@@ -254,7 +279,7 @@ func TestMouseAbsoluteMovePreservesLatestCoordinate(t *testing.T) {
 	}
 	close(queue)
 
-	h.Mouse(queue)
+	runMouse(h, queue)
 	_ = w.Close()
 
 	buf := make([]byte, 32)
@@ -284,16 +309,16 @@ func TestMouseInvalidEventIgnoredGracefully(t *testing.T) {
 	queue <- []byte{0, 20, 0, 20, 0, 0, 0}
 	close(queue)
 
-	h.Mouse(queue)
+	runMouse(h, queue)
 	_ = w.Close()
 
 	buf := make([]byte, 32)
 	n, _ := r.Read(buf)
-	// Expected 2 valid 7-byte reports
-	if n != 14 {
-		t.Fatalf("expected 14 bytes (2 reports), got %d bytes: %v", n, buf[:n])
+	// The invalid packet is skipped; both valid moves coalesce (latest wins)
+	if n != 7 {
+		t.Fatalf("expected 7 bytes (1 coalesced report), got %d bytes: %v", n, buf[:n])
 	}
-	if buf[1] != 10 || buf[8] != 20 {
+	if buf[1] != 20 || buf[3] != 20 {
 		t.Errorf("unexpected reports: %v", buf[:n])
 	}
 }

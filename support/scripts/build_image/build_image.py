@@ -2,6 +2,7 @@
 
 import os
 import sys
+import stat
 import time
 import signal
 import pwd
@@ -52,6 +53,42 @@ def ensure_root_privileges():
     res = subprocess.run(cmd)
     sys.exit(res.returncode)
 
+_NS_ENV = "NANOKVM_BUILD_NS"
+
+def enter_private_namespace():
+    """Re-exec (as root) inside a private mount + PID namespace.
+
+    Every mount made by the build is invisible to the host and is torn down
+    by the kernel when the namespace exits, even on crash or SIGKILL.
+    """
+    if os.environ.get(_NS_ENV) == "1":
+        return
+    if not shutil.which("unshare"):
+        print("[!] Error: 'unshare' (util-linux) is required to isolate build mounts from the host.")
+        sys.exit(1)
+    os.environ[_NS_ENV] = "1"
+    sys.stdout.flush()
+    os.execvp("unshare", [
+        "unshare", "--mount", "--propagation", "private",
+        "--pid", "--fork", "--mount-proc",
+        sys.executable, os.path.abspath(__file__),
+    ] + sys.argv[1:])
+
+def assert_no_mounts_under(path):
+    """Refuse to delete a tree that still has something mounted inside it."""
+    root = os.path.realpath(path)
+    busy = []
+    with open("/proc/self/mounts", "r") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            mp = parts[1].replace("\\040", " ")
+            if mp == root or mp.startswith(root + os.sep):
+                busy.append(mp)
+    if busy:
+        raise RuntimeError(f"refusing to delete {root}: still mounted: {', '.join(busy)}")
+
 def replace_axp(axp_file, replacements, output=None, work_dir=None):
     global _active_mount_point
     if output is None:
@@ -66,6 +103,7 @@ def replace_axp(axp_file, replacements, output=None, work_dir=None):
         umount_chroot(mount_point)
 
     if os.path.exists(temp_dir):
+        assert_no_mounts_under(temp_dir)
         shutil.rmtree(temp_dir, ignore_errors=True)
     os.makedirs(temp_dir, exist_ok=True)
     os.makedirs(mount_point, exist_ok=True)
@@ -214,6 +252,7 @@ def replace_axp(axp_file, replacements, output=None, work_dir=None):
                     pbar.update(1)
 
     print(f"[+] Cleaning up temporary build directory: {temp_dir}...")
+    assert_no_mounts_under(temp_dir)
     shutil.rmtree(temp_dir, ignore_errors=True)
 
     real_uid_str = os.environ.get("PKEXEC_UID") or os.environ.get("SUDO_UID")
@@ -233,14 +272,49 @@ def sparse_to_raw(sparse_img, raw_img):
 def raw_to_sparse(raw_img, sparse_img):
     subprocess.run(["img2simg", raw_img, sparse_img], check=True)
 
+# Minimal device set for apt/dpkg/bash inside the chroot: (name, major, minor)
+_DEV_NODES = [
+    ("null", 1, 3), ("zero", 1, 5), ("full", 1, 7),
+    ("random", 1, 8), ("urandom", 1, 9), ("tty", 5, 0),
+]
+_DEV_LINKS = {
+    "fd": "/proc/self/fd", "stdin": "/proc/self/fd/0",
+    "stdout": "/proc/self/fd/1", "stderr": "/proc/self/fd/2",
+    "ptmx": "pts/ptmx",
+}
+
 def mount_and_chroot(raw_img, mount_point="/mnt"):
+    """Mount the rootfs with its own proc/sys/dev; never bind host /dev, /proc or /sys."""
     os.makedirs(mount_point, exist_ok=True)
 
-    subprocess.run(SUDO + ["mount", "-o", "loop", raw_img, mount_point], check=True)
-    subprocess.run(SUDO + ["mount", "-t", "proc", "/proc", os.path.join(mount_point, "proc")], check=True)
-    subprocess.run(SUDO + ["mount", "-t", "sysfs", "/sys", os.path.join(mount_point, "sys")], check=True)
-    subprocess.run(SUDO + ["mount", "--bind", "/dev", os.path.join(mount_point, "dev")], check=True)
-    subprocess.run(SUDO + ["mount", "--bind", "/dev/pts", os.path.join(mount_point, "dev/pts")], check=True)
+    def mount(*a):
+        subprocess.run(SUDO + ["mount"] + list(a), check=True)
+
+    mount("-o", "loop", raw_img, mount_point)
+
+    # Fresh procfs; kernel-global knobs are made read-only.
+    proc = os.path.join(mount_point, "proc")
+    mount("-t", "proc", "-o", "nosuid,nodev,noexec", "proc", proc)
+    for sub in ("sys", "sysrq-trigger"):
+        p = os.path.join(proc, sub)
+        mount("--bind", p, p)
+        mount("-o", "remount,bind,ro", p)
+
+    mount("-t", "sysfs", "-o", "ro,nosuid,nodev,noexec", "sysfs", os.path.join(mount_point, "sys"))
+
+    # Private /dev with only harmless nodes.
+    dev = os.path.join(mount_point, "dev")
+    mount("-t", "tmpfs", "-o", "nosuid,noexec,mode=0755,size=16m", "tmpfs", dev)
+    for name, major, minor in _DEV_NODES:
+        p = os.path.join(dev, name)
+        os.mknod(p, stat.S_IFCHR | 0o666, os.makedev(major, minor))
+        os.chmod(p, 0o666)
+    os.makedirs(os.path.join(dev, "pts"))
+    mount("-t", "devpts", "-o", "newinstance,ptmxmode=0666,mode=0620,gid=5", "devpts", os.path.join(dev, "pts"))
+    os.makedirs(os.path.join(dev, "shm"))
+    mount("-t", "tmpfs", "-o", "nosuid,nodev,mode=1777", "tmpfs", os.path.join(dev, "shm"))
+    for name, target in _DEV_LINKS.items():
+        os.symlink(target, os.path.join(dev, name))
 
     subprocess.run(SUDO + ["cp", "/usr/bin/qemu-aarch64-static", os.path.join(mount_point, "usr/bin/qemu-aarch64-static")], check=True)
     subprocess.run(SUDO + ["cp", "/etc/resolv.conf", os.path.join(mount_point, "etc/resolv.conf")], check=True)
@@ -270,7 +344,7 @@ def umount_chroot(mount_point="/mnt"):
     qemu_path = os.path.join(mount_point, "usr/bin/qemu-aarch64-static")
     if os.path.exists(qemu_path):
         subprocess.run(SUDO + ["rm", "-rf", qemu_path], check=False)
-    for mp in ["dev/pts", "dev", "sys", "proc"]:
+    for mp in ["dev/shm", "dev/pts", "dev", "sys", "proc/sysrq-trigger", "proc/sys", "proc"]:
         target = os.path.join(mount_point, mp)
         if is_mounted(target):
             subprocess.run(SUDO + ["umount", "-l", target], check=False)
@@ -337,6 +411,7 @@ if __name__ == "__main__":
     parser.add_argument("--work-dir", default="/var/tmp/nanokvm_build_axp", help="Working directory for firmware modification (default: /var/tmp/nanokvm_build_axp)")
     args = parser.parse_args()
     ensure_root_privileges()
+    enter_private_namespace()
 
     replacements = {}
     if args.dtb:

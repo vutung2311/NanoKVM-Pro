@@ -33,6 +33,7 @@ func (s *Service) Paste(c *gin.Context) {
 	}
 
 	keyUp := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	h := GetHid()
 
 	for _, char := range req.Content {
 		key, ok := CharMap[char]
@@ -43,14 +44,24 @@ func (s *Service) Paste(c *gin.Context) {
 
 		keyDown := []byte{byte(key.Modifiers), 0x00, byte(key.Code), 0x00, 0x00, 0x00, 0x00, 0x00}
 
-		hid.WriteHid0(keyDown)
-		hid.WriteHid0(keyUp)
+		for _, report := range [][]byte{keyDown, keyUp} {
+			if err := h.SubmitKeyboardWait(report, pasteReportTimeout); err != nil {
+				h.SubmitKeyboard(keyUp) // never leave a key held
+				log.Warnf("hid paste aborted: %s", err)
+				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
+				return
+			}
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
 	rsp.OkRsp(c)
 	log.Debugf("hid paste success, total %d characters processed", len(req.Content))
 }
+
+// pasteReportTimeout bounds how long Paste waits for the host to accept a
+// single report before aborting.
+const pasteReportTimeout = time.Second
 
 var CharMap = map[rune]Char{
 	// Lowercase letters

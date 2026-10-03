@@ -17,8 +17,6 @@ type Manager struct {
 type Client struct {
 	ws            *websocket.Conn
 	hid           *hid.Hid
-	keyboard      chan []byte
-	mouse         chan []byte
 	lastHeartbeat time.Time
 	mutex         sync.Mutex
 	closeOnce     sync.Once
