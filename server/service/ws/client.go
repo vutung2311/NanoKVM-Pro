@@ -107,11 +107,14 @@ func writeQueue(queue chan []byte, data []byte) {
 	select {
 	case queue <- data:
 	default:
-		timer := time.NewTimer(20 * time.Millisecond)
+		// Queue saturated: evict oldest stale position to admit newest coordinate
+		select {
+		case <-queue:
+		default:
+		}
 		select {
 		case queue <- data:
-			timer.Stop()
-		case <-timer.C:
+		default:
 			log.Debug("mouse queue full, dropping event to prevent latency stall")
 		}
 	}
@@ -122,12 +125,15 @@ func writeKeyboardQueue(queue chan []byte, data []byte) {
 	select {
 	case queue <- data:
 	default:
-		timer := time.NewTimer(50 * time.Millisecond)
+		// Queue saturated: evict oldest keystroke to admit newest event
+		select {
+		case <-queue:
+		default:
+		}
 		select {
 		case queue <- data:
-			timer.Stop()
-		case <-timer.C:
-			log.Warn("keyboard queue full, timed out to prevent websocket stall")
+		default:
+			log.Warn("keyboard queue full, dropping event to prevent latency stall")
 		}
 	}
 	jiggler.GetJiggler().Update()

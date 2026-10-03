@@ -2,9 +2,11 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -26,7 +28,10 @@ type WiFiDetails struct {
 }
 
 func GetWifiDetails() (*WiFiDetails, error) {
-	cmd := exec.Command("wpa_cli", "-i", "wlan0", "status")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "wpa_cli", "-i", "wlan0", "status")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute wpa_cli status: %v", err)
@@ -83,7 +88,10 @@ func GetWifiDetails() (*WiFiDetails, error) {
 }
 
 func GetConfiguredNetworks() ([]string, error) {
-	cmd := exec.Command("wpa_cli", "-i", "wlan0", "list_networks")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "wpa_cli", "-i", "wlan0", "list_networks")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute wpa_cli: %v, output: %s", err, string(output))

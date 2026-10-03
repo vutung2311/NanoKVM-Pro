@@ -144,12 +144,20 @@ func InitHdmiPassthrough() {
 	content, err := os.ReadFile(HdmiPassthroughConfigFile)
 	if err == nil {
 		val := strings.TrimSpace(string(content))
-		if val == "on" || val == "1" {
+		desired := val == "on" || val == "1"
+
+		current, err := isHdmiEnabled(LT6911LoopoutPower)
+		if err == nil && current == desired {
+			log.Infof("HDMI passthrough already matches configured state (%t), skipping hardware re-init", desired)
+			return
+		}
+
+		if desired {
 			log.Infof("restoring HDMI passthrough: enabled")
 			if err := enableHdmiPassthrough(); err != nil {
 				log.Errorf("failed to enable HDMI passthrough: %s", err)
 			}
-		} else if val == "off" || val == "0" {
+		} else {
 			log.Infof("restoring HDMI passthrough: disabled")
 			if err := disableHdmiPassthrough(); err != nil {
 				log.Errorf("failed to disable HDMI passthrough: %s", err)

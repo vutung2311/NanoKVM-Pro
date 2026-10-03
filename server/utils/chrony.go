@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -18,7 +19,10 @@ type ChronyStatusInfo struct {
 }
 
 func ChronycBurst() error {
-	cmd := exec.Command("chronyc", "burst", "4/4")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "chronyc", "burst", "4/4")
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
 
@@ -34,7 +38,10 @@ func ChronycBurst() error {
 }
 
 func GetChronySyncStatus() (*ChronyStatusInfo, error) {
-	cmd := exec.Command("chronyc", "tracking")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "chronyc", "tracking")
 	var out bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &out

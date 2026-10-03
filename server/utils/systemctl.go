@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,31 +13,63 @@ import (
 )
 
 var (
-	systemctlClient     *dbus.Conn
-	systemctlClientOnce sync.Once
+	systemctlClientMu sync.Mutex
+	systemctlClient   *dbus.Conn
 )
 
 func init() {
-	var err error
+	_, _ = getSystemctlClient()
+}
 
-	systemctlClientOnce.Do(func() {
-		ctx := context.Background()
-		systemctlClient, err = dbus.NewSystemConnectionContext(ctx)
-		if err != nil {
-			log.Errorf("connect systemctl failed error=%s", err)
-			systemctlClient = nil
-		}
-	})
+func getSystemctlClient() (*dbus.Conn, error) {
+	systemctlClientMu.Lock()
+	defer systemctlClientMu.Unlock()
+
+	if systemctlClient != nil {
+		return systemctlClient, nil
+	}
+
+	conn, err := dbus.NewSystemConnectionContext(context.Background())
+	if err != nil {
+		log.Errorf("connect systemctl failed error=%s", err)
+		return nil, fmt.Errorf("failed to connect to systemd bus: %w", err)
+	}
+	systemctlClient = conn
+	return systemctlClient, nil
+}
+
+func resetSystemctlClient() {
+	systemctlClientMu.Lock()
+	defer systemctlClientMu.Unlock()
+
+	if systemctlClient != nil {
+		systemctlClient.Close()
+		systemctlClient = nil
+	}
+}
+
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "closed") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "EOF")
 }
 
 func IsServiceRunning(servicename string) (bool, error) {
-	// Check if the service exists
-	if systemctlClient == nil {
-		return false, fmt.Errorf("failed to connect to systemd bus")
+	client, err := getSystemctlClient()
+	if err != nil {
+		return false, err
 	}
 
-	properties, err := systemctlClient.GetUnitPropertiesContext(context.Background(), servicename)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	properties, err := client.GetUnitPropertiesContext(ctx, servicename)
 	if err != nil {
+		if isConnectionError(err) {
+			resetSystemctlClient()
+		}
 		return false, err
 	}
 
@@ -95,13 +128,20 @@ func DaemonReload() error {
 }
 
 func StartService(name string, enable bool) error {
-	if systemctlClient == nil {
-		return fmt.Errorf("failed to connect to systemd bus")
+	client, err := getSystemctlClient()
+	if err != nil {
+		return err
 	}
 
 	if enable {
-		_, _, err := systemctlClient.EnableUnitFilesContext(context.Background(), []string{name}, false, true)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		_, _, err := client.EnableUnitFilesContext(ctx, []string{name}, false, true)
 		if err != nil {
+			if isConnectionError(err) {
+				resetSystemctlClient()
+			}
 			return fmt.Errorf("failed to enable service: %v", err)
 		}
 
@@ -113,9 +153,15 @@ func StartService(name string, enable bool) error {
 		return nil
 	}
 
-	ch := make(chan string)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
-	if _, err := systemctlClient.StartUnitContext(context.Background(), name, "replace", ch); err != nil {
+	ch := make(chan string, 1)
+
+	if _, err := client.StartUnitContext(ctx, name, "replace", ch); err != nil {
+		if isConnectionError(err) {
+			resetSystemctlClient()
+		}
 		return fmt.Errorf("failed to start service: %v", err)
 	}
 
@@ -124,7 +170,7 @@ func StartService(name string, enable bool) error {
 		if result != "done" {
 			return fmt.Errorf("service start failed: %s", result)
 		}
-	case <-time.After(6 * time.Second):
+	case <-ctx.Done():
 		return fmt.Errorf("service start timed out")
 	}
 
@@ -137,13 +183,20 @@ func StartService(name string, enable bool) error {
 }
 
 func RestartService(serviceName string) error {
-	if systemctlClient == nil {
-		return fmt.Errorf("failed to connect to systemd bus")
+	client, err := getSystemctlClient()
+	if err != nil {
+		return err
 	}
 
-	ch := make(chan string)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
-	if _, err := systemctlClient.RestartUnitContext(context.Background(), serviceName, "replace", ch); err != nil {
+	ch := make(chan string, 1)
+
+	if _, err := client.RestartUnitContext(ctx, serviceName, "replace", ch); err != nil {
+		if isConnectionError(err) {
+			resetSystemctlClient()
+		}
 		return fmt.Errorf("failed to restart service: %v", err)
 	}
 
@@ -152,7 +205,7 @@ func RestartService(serviceName string) error {
 		if result != "done" {
 			return fmt.Errorf("service restart failed: %s", result)
 		}
-	case <-time.After(6 * time.Second):
+	case <-ctx.Done():
 		return fmt.Errorf("service restart timed out")
 	}
 
@@ -174,7 +227,11 @@ func StopService(name string, disable bool) error {
 }
 
 func execute(command string) ([]byte, error) {
-	cmd := exec.Command("sh", "-c", command)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.WaitDelay = 2 * time.Second // force-close pipes if children outlive sh after timeout
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

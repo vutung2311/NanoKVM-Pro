@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -167,14 +169,13 @@ func (s *Service) DownloadImage(c *gin.Context) {
 
 		lw := &loggingWriter{writer: out, totalSize: resp.ContentLength}
 		lw.startTicker()
+		defer lw.stopTicker()
 		_, err = io.Copy(lw, resp.Body)
 		if err != nil {
 			log.Error("Failed to save the file")
 			rsp.ErrRsp(c, -1, "failed to save the file")
-			lw.stopTicker()
 			return
 		}
-		lw.stopTicker()
 	}()
 	rsp.OkRspWithData(c, &proto.StatusImageRsp{
 		Status:     "in_progress",
@@ -188,12 +189,13 @@ type loggingWriter struct {
 	total     int64
 	totalSize int64
 	ticker    *time.Ticker
-	done      chan bool
+	done      chan struct{}
+	stopOnce  sync.Once
 }
 
 func (lw *loggingWriter) startTicker() {
 	lw.ticker = time.NewTicker(2500 * time.Millisecond)
-	lw.done = make(chan bool)
+	lw.done = make(chan struct{})
 	go func() {
 		for {
 			select {
@@ -207,12 +209,19 @@ func (lw *loggingWriter) startTicker() {
 }
 
 func (lw *loggingWriter) stopTicker() {
-	lw.ticker.Stop()
-	lw.done <- true
+	lw.stopOnce.Do(func() {
+		if lw.ticker != nil {
+			lw.ticker.Stop()
+		}
+		if lw.done != nil {
+			close(lw.done)
+		}
+	})
 }
 
 func (lw *loggingWriter) updateSentinel() {
-	percentage := float64(lw.total) / float64(lw.totalSize) * 100
+	total := atomic.LoadInt64(&lw.total)
+	percentage := float64(total) / float64(lw.totalSize) * 100
 	content, err := os.ReadFile(sentinelPath)
 	if err != nil {
 		log.Error("Failed to read sentinel file")
@@ -230,6 +239,6 @@ func (lw *loggingWriter) updateSentinel() {
 
 func (lw *loggingWriter) Write(p []byte) (int, error) {
 	n, err := lw.writer.Write(p)
-	lw.total += int64(n)
+	atomic.AddInt64(&lw.total, int64(n))
 	return n, err
 }
