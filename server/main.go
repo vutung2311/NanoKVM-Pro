@@ -14,6 +14,7 @@ import (
 	"NanoKVM-Server/logger"
 	"NanoKVM-Server/middleware"
 	"NanoKVM-Server/router"
+	"NanoKVM-Server/service/vm"
 	"NanoKVM-Server/service/vm/jiggler"
 
 	"github.com/gin-gonic/gin"
@@ -32,6 +33,9 @@ func initialize() {
 
 	// init screen parameters
 	_ = common.GetScreen()
+
+	// restore HDMI passthrough state (reads /etc/kvm/hdmi_passthrough)
+	vm.InitHdmiPassthrough()
 
 	// run mouse jiggler (reads /etc/kvm/mouse-jiggler; no-op if disabled by user)
 	jiggler.GetJiggler().Run()

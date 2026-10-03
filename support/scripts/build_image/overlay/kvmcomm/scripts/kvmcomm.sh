@@ -277,6 +277,25 @@ else
     insmod /kvmcomm/ko/lt6911_manage.ko
 fi
 
+# Restore HDMI passthrough state if configured
+readonly HDMI_PASSTHROUGH_CONF="/etc/kvm/hdmi_passthrough"
+if [ -f "$HDMI_PASSTHROUGH_CONF" ]; then
+    pt_val=$(tr -d ' \t\r\n' <"$HDMI_PASSTHROUGH_CONF")
+    if [ "$pt_val" = "0" ] || [ "$pt_val" = "off" ]; then
+        echo "$(date) - Restoring HDMI passthrough: disabled" >>"$LOG_FILE"
+        echo 0 > /proc/lt6911_info/loopout_power 2>/dev/null || true
+        echo 0 > /proc/lt6911_info/hdmi_power 2>/dev/null || true
+        usleep 10000 2>/dev/null || sleep 0.01 2>/dev/null || true
+        echo 1 > /proc/lt6911_info/hdmi_power 2>/dev/null || true
+    elif [ "$pt_val" = "1" ] || [ "$pt_val" = "on" ]; then
+        echo "$(date) - Restoring HDMI passthrough: enabled" >>"$LOG_FILE"
+        echo 0 > /proc/lt6911_info/hdmi_power 2>/dev/null || true
+        usleep 10000 2>/dev/null || sleep 0.01 2>/dev/null || true
+        echo 1 > /proc/lt6911_info/loopout_power 2>/dev/null || true
+        echo 1 > /proc/lt6911_info/hdmi_power 2>/dev/null || true
+    fi
+fi
+
 ver=$(cat /boot/ver | awk -F- '{print $5}' | sed 's/^v//')
 if ! version_lt "$ver" "1.0.12"; then
     load_ko /kvmcomm/ko/wireguard.ko
