@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 
 import { getOperatingSystem } from '@/lib/browser.ts';
 import { KeyboardReport } from '@/lib/keyboard.ts';
 import { isModifier } from '@/lib/keymap';
 import { client, MessageEvent } from '@/lib/websocket.ts';
-import { isKeyboardEnableAtom } from '@/jotai/keyboard.ts';
+import { isCapsLockActiveAtom, isKeyboardEnableAtom } from '@/jotai/keyboard.ts';
 
 import { Recorder } from './recorder.tsx';
 import { useAltGr } from './useAltGr.ts';
@@ -16,6 +16,7 @@ export const Keyboard = () => {
   const os = getOperatingSystem();
 
   const isKeyboardEnabled = useAtomValue(isKeyboardEnableAtom);
+  const setIsCapsLockActive = useSetAtom(isCapsLockActiveAtom);
 
   const keyboardRef = useRef(new KeyboardReport());
   const pressedKeys = useRef(new Set<string>());
@@ -47,6 +48,10 @@ export const Keyboard = () => {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     function handleKeyDown(event: KeyboardEvent) {
+      if (typeof event.getModifierState === 'function') {
+        setIsCapsLockActive(event.getModifierState('CapsLock'));
+      }
+
       if (!isKeyboardEnabled) return;
       if (isComposing.current || event.isComposing) return;
 
@@ -70,6 +75,10 @@ export const Keyboard = () => {
     }
 
     function handleKeyUp(event: KeyboardEvent) {
+      if (typeof event.getModifierState === 'function') {
+        setIsCapsLockActive(event.getModifierState('CapsLock'));
+      }
+
       if (!isKeyboardEnabled) return;
       if (isComposing.current || event.isComposing) return;
 

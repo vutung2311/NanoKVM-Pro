@@ -211,6 +211,105 @@ export const keyboardOptions = {
   // ...remaining options...
 };
 
+export const letterKeysMap: Record<string, { upper: string; lower: string }> = {
+  KeyQ: { upper: 'Q', lower: 'q' },
+  KeyW: { upper: 'W', lower: 'w' },
+  KeyE: { upper: 'E', lower: 'e' },
+  KeyR: { upper: 'R', lower: 'r' },
+  KeyT: { upper: 'T', lower: 't' },
+  KeyY: { upper: 'Y', lower: 'y' },
+  KeyU: { upper: 'U', lower: 'u' },
+  KeyI: { upper: 'I', lower: 'i' },
+  KeyO: { upper: 'O', lower: 'o' },
+  KeyP: { upper: 'P', lower: 'p' },
+  KeyA: { upper: 'A', lower: 'a' },
+  KeyS: { upper: 'S', lower: 's' },
+  KeyD: { upper: 'D', lower: 'd' },
+  KeyF: { upper: 'F', lower: 'f' },
+  KeyG: { upper: 'G', lower: 'g' },
+  KeyH: { upper: 'H', lower: 'h' },
+  KeyJ: { upper: 'J', lower: 'j' },
+  KeyK: { upper: 'K', lower: 'k' },
+  KeyL: { upper: 'L', lower: 'l' },
+  KeyZ: { upper: 'Z', lower: 'z' },
+  KeyX: { upper: 'X', lower: 'x' },
+  KeyC: { upper: 'C', lower: 'c' },
+  KeyV: { upper: 'V', lower: 'v' },
+  KeyB: { upper: 'B', lower: 'b' },
+  KeyN: { upper: 'N', lower: 'n' },
+  KeyM: { upper: 'M', lower: 'm' },
+
+  // Russian letters
+  RusQ: { upper: 'Й', lower: 'й' },
+  RusW: { upper: 'Ц', lower: 'ц' },
+  RusE: { upper: 'У', lower: 'у' },
+  RusR: { upper: 'К', lower: 'к' },
+  RusT: { upper: 'Е', lower: 'е' },
+  RusY: { upper: 'Н', lower: 'н' },
+  RusU: { upper: 'Г', lower: 'г' },
+  RusI: { upper: 'Ш', lower: 'ш' },
+  RusO: { upper: 'Щ', lower: 'щ' },
+  RusP: { upper: 'З', lower: 'з' },
+  RusBracketLeft: { upper: 'Х', lower: 'х' },
+  RusBracketRight: { upper: 'Ъ', lower: 'ъ' },
+  RusA: { upper: 'Ф', lower: 'ф' },
+  RusS: { upper: 'Ы', lower: 'ы' },
+  RusD: { upper: 'В', lower: 'в' },
+  RusF: { upper: 'А', lower: 'а' },
+  RusG: { upper: 'П', lower: 'п' },
+  RusH: { upper: 'Р', lower: 'р' },
+  RusJ: { upper: 'О', lower: 'о' },
+  RusK: { upper: 'Л', lower: 'л' },
+  RusL: { upper: 'Д', lower: 'д' },
+  RusSemicolon: { upper: 'Ж', lower: 'ж' },
+  RusQuote: { upper: 'Э', lower: 'э' },
+  RusZ: { upper: 'Я', lower: 'я' },
+  RusX: { upper: 'Ч', lower: 'ч' },
+  RusC: { upper: 'С', lower: 'с' },
+  RusV: { upper: 'М', lower: 'м' },
+  RusB: { upper: 'И', lower: 'и' },
+  RusN: { upper: 'Т', lower: 'т' },
+  RusM: { upper: 'Ь', lower: 'ь' },
+  RusComma: { upper: 'Б', lower: 'б' },
+  RusPeriod: { upper: 'Ю', lower: 'ю' },
+
+  // AZERTY letters
+  KeyA_azerty: { upper: 'A', lower: 'a' },
+  KeyZ_azerty: { upper: 'Z', lower: 'z' },
+  KeyE_azerty: { upper: 'E<br/>€', lower: 'e<br/>€' },
+  KeyR_azerty: { upper: 'R', lower: 'r' },
+  KeyT_azerty: { upper: 'T', lower: 't' },
+  KeyY_azerty: { upper: 'Y', lower: 'y' },
+  KeyU_azerty: { upper: 'U', lower: 'u' },
+  KeyI_azerty: { upper: 'I', lower: 'i' },
+  KeyO_azerty: { upper: 'O', lower: 'o' },
+  KeyP_azerty: { upper: 'P', lower: 'p' },
+  KeyQ_azerty: { upper: 'Q', lower: 'q' },
+  KeyS_azerty: { upper: 'S', lower: 's' },
+  KeyD_azerty: { upper: 'D', lower: 'd' },
+  KeyF_azerty: { upper: 'F', lower: 'f' },
+  KeyG_azerty: { upper: 'G', lower: 'g' },
+  KeyH_azerty: { upper: 'H', lower: 'h' },
+  KeyJ_azerty: { upper: 'J', lower: 'j' },
+  KeyK_azerty: { upper: 'K', lower: 'k' },
+  KeyL_azerty: { upper: 'L', lower: 'l' },
+  Semicolon_azerty: { upper: 'M', lower: 'm' },
+  KeyW_azerty: { upper: 'W', lower: 'w' },
+  KeyX_azerty: { upper: 'X', lower: 'x' },
+  KeyC_azerty: { upper: 'C', lower: 'c' },
+  KeyV_azerty: { upper: 'V', lower: 'v' },
+  KeyB_azerty: { upper: 'B', lower: 'b' },
+  KeyN_azerty: { upper: 'N', lower: 'n' }
+};
+
+export function getKeyboardDisplay(isUppercase: boolean): Record<string, string> {
+  const display: Record<string, string> = { ...keyboardOptions.display };
+  for (const [key, mapping] of Object.entries(letterKeysMap)) {
+    display[key] = isUppercase ? mapping.upper : mapping.lower;
+  }
+  return display;
+}
+
 // control keys
 export const keyboardControlPadOptions = {
   theme: 'simple-keyboard hg-theme-default',

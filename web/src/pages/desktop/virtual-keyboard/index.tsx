@@ -3,7 +3,7 @@ import { AppleOutlined, WindowsOutlined } from '@ant-design/icons';
 import clsx from 'clsx';
 import { useAtom } from 'jotai';
 import { XIcon } from 'lucide-react';
-import { KeyboardButtonTheme, KeyboardReact as Keyboard } from 'react-simple-keyboard';
+import { KeyboardReact as Keyboard, KeyboardButtonTheme } from 'react-simple-keyboard';
 import { Drawer } from 'vaul';
 
 import 'react-simple-keyboard/build/css/index.css';
@@ -15,10 +15,11 @@ import { useMediaQuery } from 'react-responsive';
 import { getKeycode, getModifierBit } from '@/lib/keymap.ts';
 import * as storage from '@/lib/localstorage.ts';
 import { client, MessageEvent } from '@/lib/websocket.ts';
-import { isKeyboardOpenAtom } from '@/jotai/keyboard.ts';
+import { isCapsLockActiveAtom, isKeyboardOpenAtom } from '@/jotai/keyboard.ts';
 
 import {
   doubleKeys,
+  getKeyboardDisplay,
   keyboardArrowsOptions,
   keyboardControlPadOptions,
   keyboardOptions,
@@ -30,6 +31,7 @@ export const VirtualKeyboard = () => {
   const isBigScreen = useMediaQuery({ minWidth: 850 });
 
   const [isKeyboardOpen, setIsKeyboardOpen] = useAtom(isKeyboardOpenAtom);
+  const [isCapsLockActive, setIsCapsLockActive] = useAtom(isCapsLockActiveAtom);
 
   const [keyboardLayout, setKeyboardLayout] = useState('default');
   const [keyboardSystem, setKeyboardSystem] = useState('win');
@@ -81,8 +83,29 @@ export const VirtualKeyboard = () => {
     setKeyboardLayout('default');
   }, [keyboardSystem, keyboardLanguage]);
 
+  useEffect(() => {
+    function handleModifierSync(e: KeyboardEvent | MouseEvent) {
+      if (typeof e.getModifierState === 'function') {
+        setIsCapsLockActive(e.getModifierState('CapsLock'));
+      }
+    }
+
+    window.addEventListener('keydown', handleModifierSync);
+    window.addEventListener('click', handleModifierSync);
+    return () => {
+      window.removeEventListener('keydown', handleModifierSync);
+      window.removeEventListener('click', handleModifierSync);
+    };
+  }, [setIsCapsLockActive]);
+
   // Press key
   function onKeyPress(key: string) {
+    if (key === '{capslock}') {
+      setIsCapsLockActive((prev) => !prev);
+      sendKeydown(key);
+      return;
+    }
+
     if (modifierKeys.includes(key)) {
       if (activeModifierKeys.includes(key)) {
         sendModifierKeyDown();
@@ -189,13 +212,22 @@ export const VirtualKeyboard = () => {
   function getButtonTheme(): KeyboardButtonTheme[] {
     const theme = [{ class: 'hg-double', buttons: doubleKeys.join(' ') }];
 
-    if (activeModifierKeys.length > 0) {
-      const buttons = activeModifierKeys.join(' ');
+    const highlighted = [...activeModifierKeys];
+    if (isCapsLockActive) {
+      highlighted.push('{capslock}');
+    }
+
+    if (highlighted.length > 0) {
+      const buttons = highlighted.join(' ');
       theme.push({ class: 'hg-highlight', buttons });
     }
 
     return theme;
   }
+
+  const isShiftActive =
+    activeModifierKeys.includes('{shiftleft}') || activeModifierKeys.includes('{shiftright}');
+  const isUppercase = isCapsLockActive ? !isShiftActive : isShiftActive;
 
   return (
     <Drawer.Root open={isKeyboardOpen} onOpenChange={setIsKeyboardOpen} modal={false}>
@@ -255,6 +287,7 @@ export const VirtualKeyboard = () => {
               onKeyReleased={onKeyReleased}
               layoutName={keyboardLayout}
               {...keyboardOptions}
+              display={getKeyboardDisplay(isUppercase)}
             />
 
             {/* control keyboard */}
