@@ -78,8 +78,25 @@ is_prj_rootpath() {
 # Find ARM64 cross compiler toolchain
 find_pro_cc() {
     local INI_FILE="../support/toolchains/toolchain.ini"
+    local DEFAULT_CC="../support/toolchains/armv8-toolchains/bin/aarch64-none-linux-gnu-gcc"
+
+    # Auto-generate toolchain.ini if missing but armv8-toolchains is installed
+    if [ ! -f "$INI_FILE" ] && [ -x "$DEFAULT_CC" ]; then
+        log_info "Auto-generating toolchain.ini from existing toolchain..."
+        mkdir -p "../support/toolchains"
+        local default_bin
+        default_bin="$(cd "$(dirname "$DEFAULT_CC")" && pwd)"
+        cat <<EOF > "$INI_FILE"
+[toolchain]
+cc = ${default_bin}/aarch64-none-linux-gnu-gcc
+cxx = ${default_bin}/aarch64-none-linux-gnu-g++
+ld = ${default_bin}/aarch64-none-linux-gnu-ld
+EOF
+    fi
+
     if [ ! -f "$INI_FILE" ]; then
         log_error "Toolchain configuration file not found: $INI_FILE"
+        log_error "Please run 'make setup-tooling' to configure the cross-toolchain."
         return 1
     fi
 
@@ -138,8 +155,8 @@ build_project() {
         return 1
     fi
 
-    # Get version information
-    VERSION=$(cat version.txt 2>/dev/null || echo "dev")
+    # Get version information (honour passed argument, environment variable, or version.txt)
+    VERSION="${VERSION:-$(cat version.txt 2>/dev/null || cat ../VERSION 2>/dev/null || echo "1.2.15")}"
     BUILD_TIME=$(date +"%Y-%m-%d %H:%M:%S")
     COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     GO_VERSION=$(go version | awk '{print $3}')

@@ -10,7 +10,23 @@ import zipfile
 import shutil
 import argparse
 import subprocess
-from tqdm import tqdm
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    class tqdm:
+        def __init__(self, iterable=None, total=None, desc="", unit="", **kwargs):
+            self.total = total
+            self.desc = desc
+            self.count = 0
+            if desc:
+                print(f"[*] {desc}...")
+        def update(self, n=1):
+            self.count += n
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
 
 _active_mount_point = None
 
@@ -316,8 +332,62 @@ def mount_and_chroot(raw_img, mount_point="/mnt"):
     for name, target in _DEV_LINKS.items():
         os.symlink(target, os.path.join(dev, name))
 
-    subprocess.run(SUDO + ["cp", "/usr/bin/qemu-aarch64-static", os.path.join(mount_point, "usr/bin/qemu-aarch64-static")], check=True)
-    subprocess.run(SUDO + ["cp", "/etc/resolv.conf", os.path.join(mount_point, "etc/resolv.conf")], check=True)
+    qemu_src = find_qemu_static()
+    if not qemu_src:
+        print("[!] Error: qemu-aarch64-static emulator binary not found.")
+        print("[!] Please run 'make setup-tooling' or install qemu-user-static.")
+        sys.exit(1)
+    subprocess.run(SUDO + ["cp", qemu_src, os.path.join(mount_point, "usr/bin/qemu-aarch64-static")], check=True)
+    setup_chroot_dns(mount_point)
+
+def find_qemu_static():
+    for candidate in [
+        shutil.which("qemu-aarch64-static"),
+        "/usr/bin/qemu-aarch64-static",
+        "/usr/local/bin/qemu-aarch64-static",
+    ]:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+def setup_chroot_dns(mount_point):
+    resolv_dest = os.path.join(mount_point, "etc/resolv.conf")
+    nameservers = []
+    if os.path.exists("/etc/resolv.conf"):
+        try:
+            with open("/etc/resolv.conf", "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("nameserver"):
+                        parts = line.split()
+                        if len(parts) >= 2 and not parts[1].startswith("127."):
+                            nameservers.append(parts[1])
+        except Exception:
+            pass
+    if not nameservers:
+        nameservers = ["1.1.1.1", "8.8.8.8"]
+
+    content = "".join([f"nameserver {ns}\n" for ns in nameservers])
+    import tempfile
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False) as tf:
+            tf.write(content)
+            temp_resolv = tf.name
+
+        # Ensure destination is not a dangling symlink inside rootfs
+        if os.path.islink(resolv_dest) or os.path.exists(resolv_dest):
+            try:
+                os.remove(resolv_dest)
+            except OSError:
+                subprocess.run(SUDO + ["rm", "-f", resolv_dest], check=False)
+
+        subprocess.run(SUDO + ["cp", temp_resolv, resolv_dest], check=True)
+    finally:
+        if 'temp_resolv' in locals() and os.path.exists(temp_resolv):
+            try:
+                os.remove(temp_resolv)
+            except OSError:
+                pass
 
 def run_chroot_commands(mount_point="/mnt", commands=None):
     if commands:

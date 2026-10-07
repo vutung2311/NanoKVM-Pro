@@ -29,10 +29,19 @@ OUTPUT_AXP      ?= $(DIST_DIR)/NanoKVMPro_Custom_$(VERSION_UNDERSCORE).axp
 OUTPUT_IMG_XZ   ?= $(DIST_DIR)/NanoKVMPro_Custom_$(VERSION_UNDERSCORE).img.xz
 
 # Tools & Binaries
-PYTHON          ?= python3
-VENV_PYTHON     ?= $(BUILD_IMAGE_DIR)/.venv/bin/python3
-AXP2IMG         ?= $(shell command -v axp2img 2>/dev/null || ([ -x $(BUILD_IMAGE_DIR)/.venv/bin/axp2img ] && echo $(BUILD_IMAGE_DIR)/.venv/bin/axp2img) || echo axp2img)
-PNPM            ?= pnpm
+VENV_DIR        ?= $(BUILD_IMAGE_DIR)/.venv
+VENV_PYTHON     ?= $(VENV_DIR)/bin/python3
+BUILD_PYTHON    ?= $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),$(shell command -v python3 || echo python3))
+AXP2IMG         ?= $(shell command -v axp2img 2>/dev/null || ([ -x $(VENV_DIR)/bin/axp2img ] && echo $(VENV_DIR)/bin/axp2img) || echo axp2img)
+PNPM            ?= $(shell command -v pnpm 2>/dev/null || (command -v npx >/dev/null 2>&1 && echo "npx -y pnpm") || echo pnpm)
+TOOLCHAIN_INI   ?= $(SUPPORT_DIR)/toolchains/toolchain.ini
+
+# Kernel Build & Packaging Configuration
+KERNEL_BUILD_SCRIPT ?= $(SUPPORT_DIR)/scripts/build_kernel.sh
+CUSTOM_BOOT_BIN     ?= $(DIST_DIR)/boot_signed.bin
+CUSTOM_DTB_BIN      ?= $(DIST_DIR)/AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.dtb
+USE_CUSTOM_KERNEL   ?= $(if $(wildcard $(CUSTOM_BOOT_BIN)),1,0)
+KVM_HOST            ?=
 
 # Upstream Repository Settings
 UPSTREAM_REMOTE ?= upstream
@@ -62,10 +71,25 @@ RESET := \033[0m
 # ------------------------------------------------------------------------------
 # Phony Targets
 # ------------------------------------------------------------------------------
-.PHONY: all help fetch-base build server client web overlay deb app-pkg web-pkg image-axp image-raw image-img image release deploy clean distclean flash-info check-upstream rebase-upstream sync-upstream
+.PHONY: all help check-tools setup-tooling fetch-base build server client web overlay deb app-pkg web-pkg image-axp image-raw image-img image release deploy deploy-all clean distclean flash-info check-upstream rebase-upstream sync-upstream firmware-pkg update-pkg firmware-flash update-flash kernel-check kernel-flash-b kernel-boot-a kernel-boot-b
 
 # Default Target
 all: help
+
+# ------------------------------------------------------------------------------
+# Tooling & Dependency Targets
+# ------------------------------------------------------------------------------
+## Validate that all build prerequisites and tools are installed
+check-tools:
+	@$(SUPPORT_DIR)/scripts/setup_tooling.sh --check-only || { \
+		echo ""; \
+		echo -e "$(YELLOW)Hint: Run '$(GREEN)make setup-tooling$(YELLOW)' to automatically install missing dependencies.$(RESET)"; \
+		exit 1; \
+	}
+
+## Automatically install host packages, Python venv, and cross-toolchain (multi-distro)
+setup-tooling:
+	@$(SUPPORT_DIR)/scripts/setup_tooling.sh
 
 # ------------------------------------------------------------------------------
 # Base Firmware Targets
@@ -111,18 +135,28 @@ fetch-base:
 build: server client
 
 ## Compile NanoKVM-Server ARM64 binary
-server:
+server: $(TOOLCHAIN_INI)
 	@echo -e "$(CYAN)==> Building NanoKVM-Server (Go + ARM64 toolchain)...$(RESET)"
-	@cd $(SERVER_DIR) && ./build.sh
+	@cd $(SERVER_DIR) && VERSION="$(VERSION)" ./build.sh
 	@echo -e "$(GREEN)[✓] NanoKVM-Server built successfully: $(SERVER_DIR)/NanoKVM-Server$(RESET)"
+
+$(TOOLCHAIN_INI):
+	@echo -e "$(YELLOW)[!] ARM64 cross-toolchain configuration not found ($(TOOLCHAIN_INI)).$(RESET)"
+	@echo -e "$(CYAN)==> Configuring cross-toolchain automatically...$(RESET)"
+	@$(SUPPORT_DIR)/scripts/toolchain_setup.sh --non-interactive
 
 ## Compile Web UI frontend with pnpm/vite
 client: web
 web:
 	@echo -e "$(CYAN)==> Building Web Client (Vite + TypeScript)...$(RESET)"
+	@if ! command -v pnpm >/dev/null 2>&1 && ! command -v npx >/dev/null 2>&1; then \
+		echo -e "$(RED)Error: Neither 'pnpm' nor 'npx' was found in PATH.$(RESET)"; \
+		echo -e "$(YELLOW)Please install pnpm or run: make setup-tooling$(RESET)"; \
+		exit 1; \
+	fi
 	@cd $(WEB_DIR) && \
 		if [ ! -d "node_modules" ]; then \
-			echo -e "$(YELLOW)[!] Installing frontend dependencies with pnpm...$(RESET)"; \
+			echo -e "$(YELLOW)[!] Installing frontend dependencies with $(PNPM)...$(RESET)"; \
 			$(PNPM) install; \
 		fi && \
 		$(PNPM) run build
@@ -140,11 +174,20 @@ overlay: server client
 	@rm -rf $(OVERLAY_DIR)/kvmapp/server/web/*
 	@cp -r $(WEB_DIR)/dist/* $(OVERLAY_DIR)/kvmapp/server/web/
 	@chmod +x $(OVERLAY_DIR)/kvmapp/scripts/*.sh 2>/dev/null || true
-	@chmod +x $(OVERLAY_DIR)/kvmcomm/scripts/*.sh 2>/dev/null || true
+	@if [ "$(USE_CUSTOM_KERNEL)" = "1" ] || [ -f "$(CUSTOM_BOOT_BIN)" ] || [ -f "$(SUPPORT_DIR)/kernel/boot_signed.bin" ]; then \
+		echo -e "$(CYAN)==> Staging custom kernel modules into overlay directory...$(RESET)"; \
+		bash $(KERNEL_BUILD_SCRIPT) stage-modules $(OVERLAY_DIR); \
+	fi
 	@echo -e "$(GREEN)[✓] Overlay staged at: $(OVERLAY_DIR)$(RESET)"
 
 ## Repackage ARM64 Debian packages (nanokvmpro & kvmcomm) with custom code & scripts
 deb: server client
+	@if ! command -v dpkg-deb >/dev/null 2>&1; then \
+		echo -e "$(RED)Error: dpkg-deb command not found.$(RESET)"; \
+		echo -e "$(YELLOW)Please install 'dpkg' (Arch: pacman -S dpkg, Debian: apt install dpkg-dev, Fedora: dnf install dpkg-dev)$(RESET)"; \
+		echo -e "$(YELLOW)Or run: make setup-tooling$(RESET)"; \
+		exit 1; \
+	fi
 	@if [ ! -d "$(BASE_APP_DIR)" ] || [ ! -f "$(BASE_APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb" ]; then \
 		echo -e "$(CYAN)==> Base packages not found, fetching base firmware...$(RESET)"; \
 		$(MAKE) fetch-base; \
@@ -154,6 +197,7 @@ deb: server client
 	@cp -f $(BASE_APP_DIR)/*.deb $(BASE_APP_DIR)/*.json $(APP_DIR)/
 	@echo -e "$(CYAN)==> Repackaging $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb...$(RESET)"
 	@REPACK_DIR=$$(mktemp -d -t nanokvm_deb_XXXXXX); \
+	trap 'rm -rf "$$REPACK_DIR"' EXIT; \
 	dpkg-deb -R $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb "$$REPACK_DIR" && \
 	cp $(SERVER_DIR)/NanoKVM-Server "$$REPACK_DIR/kvmapp/server/NanoKVM-Server" && \
 	chmod 755 "$$REPACK_DIR/kvmapp/server/NanoKVM-Server" && \
@@ -163,13 +207,13 @@ deb: server client
 		cp -r $(OVERLAY_DIR)/kvmapp/scripts/* "$$REPACK_DIR/kvmapp/scripts/" && \
 		chmod -R 755 "$$REPACK_DIR/kvmapp/scripts/"; \
 	fi && \
-	dpkg-deb --root-owner-group -b "$$REPACK_DIR" $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb && \
-	rm -rf "$$REPACK_DIR"
+	dpkg-deb --root-owner-group -b "$$REPACK_DIR" $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb
 	@cp -f $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb $(DIST_DIR)/
 	@echo -e "$(GREEN)[✓] Debian package ready: $(DIST_DIR)/nanokvmpro_$(VERSION)_arm64.deb$(RESET)"
 	@if [ -f "$(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb" ]; then \
 		echo -e "$(CYAN)==> Repackaging $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb with Wi-Fi auto-restore scripts...$(RESET)"; \
 		REPACK_COMM=$$(mktemp -d -t kvmcomm_deb_XXXXXX); \
+		trap 'rm -rf "$$REPACK_COMM"' EXIT; \
 		dpkg-deb -R $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb "$$REPACK_COMM" && \
 		if [ -f "$(OVERLAY_DIR)/kvmcomm/scripts/wifi.sh" ]; then \
 			cp $(OVERLAY_DIR)/kvmcomm/scripts/wifi.sh "$$REPACK_COMM/kvmcomm/scripts/wifi.sh" && \
@@ -180,7 +224,6 @@ deb: server client
 			chmod 755 "$$REPACK_COMM/kvmcomm/scripts/kvmcomm.sh"; \
 		fi && \
 		dpkg-deb --root-owner-group -b "$$REPACK_COMM" $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb && \
-		rm -rf "$$REPACK_COMM" && \
 		cp -f $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb $(DIST_DIR)/; \
 		echo -e "$(GREEN)[✓] Debian package ready: $(DIST_DIR)/kvmcomm_$(VERSION)_arm64.deb$(RESET)"; \
 	fi
@@ -203,13 +246,112 @@ web-pkg: deb
 	@cd $(DIST_DIR) && tar -czf nanokvm_pro_$(VERSION).tar.gz nanokvm_pro_$(VERSION)/
 	@echo -e "$(GREEN)[✓] Web update package ready: $(DIST_DIR)/nanokvm_pro_$(VERSION).tar.gz$(RESET)"
 
+## Build full in-system firmware update package (.tar.xz) with kernel, DTB, U-Boot & rootfs overlay
+firmware-pkg: build deb overlay kernel
+	@bash $(SUPPORT_DIR)/scripts/package_firmware.sh build
+
+## Alias for firmware-pkg
+update-pkg: firmware-pkg
+
+## Flash in-system firmware update package over SSH and reboot (Usage: make firmware-flash IP=<device-ip>)
+firmware-flash: firmware-pkg
+	@TARGET_IP="$${IP:-$${DEVICE_IP:-$${KVM_HOST:-$(KVM_HOST)}}}"; \
+	if [ -z "$$TARGET_IP" ]; then \
+		echo -e "$(RED)Error: Target device IP required.$(RESET)"; \
+		echo -e "$(YELLOW)Usage: make firmware-flash IP=<device-ip>$(RESET)"; \
+		exit 1; \
+	fi; \
+	bash $(SUPPORT_DIR)/scripts/package_firmware.sh flash "$$TARGET_IP"
+
+## Alias for firmware-flash
+update-flash: firmware-flash
+
+# ------------------------------------------------------------------------------
+# Standalone Kernel Build Targets
+# ------------------------------------------------------------------------------
+.PHONY: kernel kernel-setup kernel-menuconfig kernel-test test-kernel kernel-kexec kernel-clean
+
+## Setup standalone Linux kernel source, SDK metadata, and Axera signing tools
+kernel-setup:
+	@echo -e "$(CYAN)==> Initializing NanoKVM-Pro kernel environment...$(RESET)"
+	@bash $(KERNEL_BUILD_SCRIPT) setup
+
+## Interactive kernel menuconfig (modifies .config)
+kernel-menuconfig:
+	@bash $(KERNEL_BUILD_SCRIPT) menuconfig
+
+## Compile kernel Image, DTB, modules, and generate signed boot_signed.bin
+kernel:
+	@echo -e "$(CYAN)==> Compiling custom NanoKVM-Pro kernel & signed boot binaries...$(RESET)"
+	@bash $(KERNEL_BUILD_SCRIPT) build
+
+## Test compiled kernel live in RAM on device via kexec (zero-flash) (Usage: make kernel-test IP=<device-ip>)
+kernel-test:
+	@TARGET_IP="$${IP:-$${DEVICE_IP:-$${KVM_HOST:-$(KVM_HOST)}}}"; \
+	if [ -z "$$TARGET_IP" ]; then \
+		echo -e "$(RED)Error: Target device IP required for kexec live testing.$(RESET)"; \
+		echo -e "$(YELLOW)Usage: make kernel-test IP=<device-ip>  (or: make test-kernel IP=<device-ip>)$(RESET)"; \
+		exit 1; \
+	fi; \
+	bash $(KERNEL_BUILD_SCRIPT) kexec "$$TARGET_IP"
+
+## Alias for kernel-test
+test-kernel: kernel-test
+
+## Alias for kernel-test (Usage: make kernel-kexec IP=<device-ip>)
+kernel-kexec: kernel-test
+
+## Run pre-flight health diagnostics on target device (Usage: make kernel-check IP=<device-ip>)
+kernel-check:
+	@TARGET_IP="$${IP:-$${DEVICE_IP:-$${KVM_HOST:-$(KVM_HOST)}}}"; \
+	if [ -z "$$TARGET_IP" ]; then \
+		echo -e "$(RED)Error: Target device IP required.$(RESET)"; \
+		echo -e "$(YELLOW)Usage: make kernel-check IP=<device-ip>$(RESET)"; \
+		exit 1; \
+	fi; \
+	bash $(KERNEL_BUILD_SCRIPT) check "$$TARGET_IP"
+
+## Flash custom kernel & DTB to Slot B with hardware verification (Usage: make kernel-flash-b IP=<device-ip>)
+kernel-flash-b:
+	@TARGET_IP="$${IP:-$${DEVICE_IP:-$${KVM_HOST:-$(KVM_HOST)}}}"; \
+	if [ -z "$$TARGET_IP" ]; then \
+		echo -e "$(RED)Error: Target device IP required for Slot B flashing.$(RESET)"; \
+		echo -e "$(YELLOW)Usage: make kernel-flash-b IP=<device-ip>$(RESET)"; \
+		exit 1; \
+	fi; \
+	bash $(KERNEL_BUILD_SCRIPT) flash-slot-b "$$TARGET_IP"
+
+## Switch active boot slot to Slot A (Usage: make kernel-boot-a IP=<device-ip>)
+kernel-boot-a:
+	@TARGET_IP="$${IP:-$${DEVICE_IP:-$${KVM_HOST:-$(KVM_HOST)}}}"; \
+	if [ -z "$$TARGET_IP" ]; then \
+		echo -e "$(RED)Error: Target device IP required.$(RESET)"; \
+		echo -e "$(YELLOW)Usage: make kernel-boot-a IP=<device-ip>$(RESET)"; \
+		exit 1; \
+	fi; \
+	bash $(KERNEL_BUILD_SCRIPT) boot-slot A "$$TARGET_IP"
+
+## Switch active boot slot to Slot B (Usage: make kernel-boot-b IP=<device-ip>)
+kernel-boot-b:
+	@TARGET_IP="$${IP:-$${DEVICE_IP:-$${KVM_HOST:-$(KVM_HOST)}}}"; \
+	if [ -z "$$TARGET_IP" ]; then \
+		echo -e "$(RED)Error: Target device IP required.$(RESET)"; \
+		echo -e "$(YELLOW)Usage: make kernel-boot-b IP=<device-ip>$(RESET)"; \
+		exit 1; \
+	fi; \
+	bash $(KERNEL_BUILD_SCRIPT) boot-slot B "$$TARGET_IP"
+
+## Clean kernel build tree and temporary objects
+kernel-clean:
+	@bash $(KERNEL_BUILD_SCRIPT) clean
+
 # ------------------------------------------------------------------------------
 # Image Generation Targets (.axp and .img.xz)
 # ------------------------------------------------------------------------------
 # Prevent parallel race conditions during heavy/privileged image modification
 .NOTPARALLEL: image-axp $(OUTPUT_AXP) image-raw image-img $(OUTPUT_IMG_XZ) image release
 
-## Repackage base AXP into custom NanoKVM-Pro AXP image
+## Repackage base AXP into custom NanoKVM-Pro AXP image (embeds custom kernel if available)
 image-axp: $(OUTPUT_AXP)
 
 $(OUTPUT_AXP): deb overlay
@@ -218,14 +360,25 @@ $(OUTPUT_AXP): deb overlay
 		echo -e "$(CYAN)==> Base AXP file not found, fetching base firmware...$(RESET)"; \
 		$(MAKE) fetch-base; \
 	fi
+	@if ! command -v qemu-aarch64-static >/dev/null 2>&1 && [ ! -x /usr/bin/qemu-aarch64-static ]; then \
+		echo -e "$(RED)Error: qemu-aarch64-static not found.$(RESET)"; \
+		echo -e "$(YELLOW)Please install qemu-user-static (or run: make setup-tooling)$(RESET)"; \
+		exit 1; \
+	fi
 	@mkdir -p $(DIST_DIR)
+	@if [ "$(USE_CUSTOM_KERNEL)" = "1" ] && [ -f "$(CUSTOM_BOOT_BIN)" ]; then \
+		echo -e "$(GREEN)[+] Embedding custom signed kernel ($(CUSTOM_BOOT_BIN)) and DTB into image.$(RESET)"; \
+	else \
+		echo -e "$(YELLOW)[*] Using stock vendor kernel from base image container.$(RESET)"; \
+	fi
 	@echo -e "$(YELLOW)[*] Elevated privileges required for image loop mounting and chroot.$(RESET)"
 	@echo -e "$(YELLOW)[*] Waiting for administrator authorization (Polkit/$(PRIV_ESC))...$(RESET)"
-	$(PRIV_ESC) $(PYTHON) $(BUILD_IMAGE_DIR)/build_image.py \
+	$(PRIV_ESC) $(BUILD_PYTHON) $(BUILD_IMAGE_DIR)/build_image.py \
 		$(BASE_AXP) \
 		--app $(APP_DIR) \
 		--overlay $(OVERLAY_DIR) \
 		--work-dir $(WORK_DIR) \
+		$(if $(filter 1,$(USE_CUSTOM_KERNEL)),$(if $(wildcard $(CUSTOM_BOOT_BIN)),--boot $(CUSTOM_BOOT_BIN) --dtb $(CUSTOM_DTB_BIN))) \
 		-o $(OUTPUT_AXP)
 	@echo -e "$(GREEN)[✓] AXP image created: $(OUTPUT_AXP)$(RESET)"
 
@@ -237,7 +390,7 @@ $(OUTPUT_IMG_XZ): $(OUTPUT_AXP)
 	@echo -e "$(CYAN)==> Converting AXP to raw disk image (.img.xz) using axp2img...$(RESET)"
 	@if [ ! -x "$$(command -v $(AXP2IMG) 2>/dev/null)" ] && [ ! -x "$(AXP2IMG)" ]; then \
 		echo -e "$(RED)Error: axp2img tool not found at $(AXP2IMG).$(RESET)"; \
-		echo -e "$(YELLOW)Please run: pip3 install axp-tools$(RESET)"; \
+		echo -e "$(YELLOW)Run 'make setup-tooling' to configure the build environment.$(RESET)"; \
 		exit 1; \
 	fi
 	$(AXP2IMG) -i $(OUTPUT_AXP) -o $(OUTPUT_IMG_XZ)
@@ -268,7 +421,7 @@ release: build deb overlay $(OUTPUT_AXP) $(OUTPUT_IMG_XZ)
 # ------------------------------------------------------------------------------
 ## Deploy updated NanoKVM-Server and Web UI deb package over SSH (usage: make deploy IP=<device-ip>)
 deploy: deb
-	@TARGET_IP="$${IP:-$${DEVICE_IP:-}}"; \
+	@TARGET_IP="$${IP:-$${DEVICE_IP:-$${KVM_HOST:-$(KVM_HOST)}}}"; \
 	if [ -z "$$TARGET_IP" ]; then \
 		echo -e "$(RED)Error: Target IP address not specified.$(RESET)"; \
 		echo -e "$(YELLOW)Usage: make deploy IP=<device-ip>  (or: make deploy DEVICE_IP=<device-ip>)$(RESET)"; \
@@ -282,7 +435,7 @@ deploy: deb
 
 ## Deploy both nanokvm and low-level kvmcomm packages (WARNING: kvmcomm restarts video kernel drivers; requires reboot)
 deploy-all: deb
-	@TARGET_IP="$${IP:-$${DEVICE_IP:-}}"; \
+	@TARGET_IP="$${IP:-$${DEVICE_IP:-$${KVM_HOST:-$(KVM_HOST)}}}"; \
 	if [ -z "$$TARGET_IP" ]; then \
 		echo -e "$(RED)Error: Target IP address not specified.$(RESET)"; \
 		echo -e "$(YELLOW)Usage: make deploy-all IP=<device-ip>$(RESET)"; \
@@ -384,6 +537,7 @@ clean:
 	@rm -f $(SERVER_DIR)/NanoKVM-Server
 	@rm -rf $(WEB_DIR)/dist
 	@rm -rf $(OVERLAY_DIR)/kvmapp/server/web $(OVERLAY_DIR)/kvmapp/server/NanoKVM-Server
+	@rm -rf $(OVERLAY_DIR)/kvmcomm/ko_* $(OVERLAY_DIR)/lib
 	@echo -e "$(GREEN)[✓] Clean complete.$(RESET)"
 
 ## Full clean of all generated build outputs (preserves support/base_firmware)

@@ -18,13 +18,45 @@ This script provides a complete image packaging process that can add NanoKVM-Pro
 
 ### Install Dependencies
 
+#### Automated (Recommended across all distributions):
+
+From the repository root, run:
+
 ```bash
-sudo apt update
-
-sudo apt install -y android-sdk-libsparse-utils qemu-user-static
-
-pip3 install axp-tools
+make setup-tooling
 ```
+
+This will automatically detect your host distribution (CachyOS/Arch, Debian/Ubuntu, Fedora), install the required system packages, provision the Python build environment (`.venv`), and configure the ARM64 cross-toolchain.
+
+You can verify that all tooling requirements are met at any time using:
+
+```bash
+make check-tools
+```
+
+#### Manual Installation by Distribution:
+
+* **Arch Linux / CachyOS / Manjaro:**
+  ```bash
+  pkexec pacman -S --needed dpkg pnpm qemu-user-static qemu-user-static-binfmt android-tools patchelf
+  ```
+
+* **Ubuntu / Debian:**
+  ```bash
+  sudo apt update
+  sudo apt install -y android-sdk-libsparse-utils qemu-user-static binfmt-support dpkg-dev patchelf
+  ```
+
+* **Fedora / RHEL:**
+  ```bash
+  sudo dnf install -y android-tools qemu-user-static dpkg-dev patchelf
+  ```
+
+* **Python Dependencies (in virtual environment):**
+  ```bash
+  python3 -m venv support/scripts/build_image/.venv
+  support/scripts/build_image/.venv/bin/pip install axp-tools tqdm
+  ```
 
 ## Quick Start
 
