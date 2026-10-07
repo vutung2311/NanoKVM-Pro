@@ -39,6 +39,15 @@ func TestRouter_Endpoints(t *testing.T) {
 	if wAPI.Code == http.StatusNotFound {
 		t.Fatalf("expected /api/auth/password to be routed, got 404")
 	}
+
+	// 3. Test /api/vm/info endpoint requires token (returns 401, route exists)
+	wInfo := httptest.NewRecorder()
+	reqInfo, _ := http.NewRequest(http.MethodGet, "/api/vm/info", nil)
+	r.ServeHTTP(wInfo, reqInfo)
+
+	if wInfo.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthorized /api/vm/info, got %d", wInfo.Code)
+	}
 }
 
 func BenchmarkRouter_API_Endpoint(b *testing.B) {

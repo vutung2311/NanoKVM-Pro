@@ -113,7 +113,11 @@ export const Information = () => {
               <span>{t('settings.about.device_number')}</span>
             </div>
 
-            <span>{information.pn ? information.pn : '-'}</span>
+            <span>
+              {information.pn && information.pn.trim().toLowerCase() !== 'unknown'
+                ? information.pn.trim()
+                : 'NebE20020'}
+            </span>
           </div>
         )}
       </div>
