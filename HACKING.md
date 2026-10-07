@@ -78,5 +78,62 @@
   * Hardened mouse WebSocket ingress in [`client.go`](file:///home/tung/Git/nanokvm-pro/server/service/ws/client.go) with bounded timeouts to prevent click/release drop during transient USB write saturation.
   * Added off-canvas window drag release synchronization in [`absolute.tsx`](file:///home/tung/Git/nanokvm-pro/web/src/pages/desktop/mouse/absolute.tsx) to flush pending rAF moves and emit `mouseup` at exact coordinates.
   * Expanded [`mouse_test.go`](file:///home/tung/Git/nanokvm-pro/server/service/hid/mouse_test.go) with tests for consecutive wheel events, burst coordinate convergence, and invalid event handling.
+- [x] **Step 11: Multi-Distribution Tooling Installation & Robust Build Pipeline:**
+  * Created [`support/scripts/setup_tooling.sh`](file:///home/tung/Git/NanoKVM-Pro/support/scripts/setup_tooling.sh) with automatic Linux distribution detection (Arch/CachyOS `pacman`, Ubuntu/Debian `apt`, Fedora `dnf`) and elevated package installation (`dpkg-deb`, `pnpm`, `qemu-user-static`, `android-tools`, etc.) via `pkexec`.
+  * Added Python virtual environment provisioning (`support/scripts/build_image/.venv`) for `axp-tools` (`axp2img`) and `tqdm`, respecting PEP 668 on modern Linux distributions (Arch/CachyOS Python 3.14).
+  * Refactored [`support/scripts/toolchain_setup.sh`](file:///home/tung/Git/NanoKVM-Pro/support/scripts/toolchain_setup.sh) to be completely path-agnostic (executable from any directory), support non-interactive execution (`--non-interactive`, `--check`, `--reinstall`), cache existing ARM64 sysroot libraries, and clarify target sysroot libraries vs host tools.
+  * Hardened [`support/scripts/build_image/build_image.py`](file:///home/tung/Git/NanoKVM-Pro/support/scripts/build_image/build_image.py) with dynamic QEMU static emulator discovery (`find_qemu_static`), dereferencing and loopback filtering in chroot `/etc/resolv.conf`, and safe fallback for `tqdm`.
+  * Enhanced [`Makefile`](file:///home/tung/Git/NanoKVM-Pro/Makefile) with `make check-tools` pre-flight diagnostic validator, `make setup-tooling` single-command environment bootstrapping, and automatic cross-toolchain triggers.
+- [x] **Step 12: Standalone Kernel Build, Axera Signing & kexec Live Pipeline:**
+  * Engineered standalone kernel build pipeline in [`support/scripts/build_kernel.sh`](file:///home/tung/Git/NanoKVM-Pro/support/scripts/build_kernel.sh) without requiring cumbersome full-SDK rebuilds.
+  * Configured official Axera Linux `4.19.125` tree with `axera_AX630C_emmc_arm64_k419_sipeed_nanokvm_defconfig` and board device tree `AX630C_emmc_arm64_k419_sipeed_nanokvm.dts`.
+  * Extracted stock recovery/initialization CPIO archive (`initramfs_rootfs.cpio`) to preserve early USB gadget MSC recovery, MAC address generation, and e2fsck repair.
+  * Integrated statically linked `ax_gzip` compression utility and RSA-2048 header signing (`sec_boot_AX620E_sign.py`) to generate authentic Axera boot containers ([`boot_signed.bin`](file:///home/tung/Git/NanoKVM-Pro/build_dist/boot_signed.bin) with magic `0x55543322` and cap `0x0054fafe`).
+  * Added Makefile targets: `make kernel` (build + sign), `make kernel-menuconfig` (interactive configuration), `make kernel-test IP=<device-ip>` (or `make test-kernel`, `make kernel-kexec` for zero-flash volatile testing in RAM with SSH reboot polling), `make kernel-setup`, and `make kernel-clean`.
+  * Integrated custom kernel artifacts into [`make image-axp`](file:///home/tung/Git/NanoKVM-Pro/Makefile), automatically embedding custom `boot_signed.bin` and DTB into `.axp` and `.img.xz` releases when present.
+- [x] **Step 13: Kernel Verification, Watchdog Disarm & Dual-Slot A/B Testing:**
+  * **Factory Kernel Byte Comparison:** Decompressed and compared official stock `.axp` kernel vs custom build: verified 100% identical `.config` (IKCONFIG), byte-for-byte matching `initramfs_rootfs.cpio` (MD5 `7c49edc835843afe5a20102ca22c009f`), and 100% byte-for-byte identical compiled device tree binary ([`AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.dtb`](file:///home/tung/Git/NanoKVM-Pro/support/kernel/AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.dtb)).
+  * **Watchdog Shutdown Hook:** Added `ax_wdt_drv_shutdown()` in [`drivers/watchdog/ax_wdt.c`](file:///home/tung/Git/NanoKVM-Pro/support/kernel/linux/linux-4.19.125/drivers/watchdog/ax_wdt.c) to cleanly disarm hardware watchdog timer `wdt0` and gate clocks during `device_shutdown()`, preventing watchdog expirations during warm jumps/reboots.
+  * **Discovered Hardware A/B Switching Mechanism:** Identified that ROM/BL1 (SPL) checks persistent SoC hardware register `TOP_CHIPMODE_GLB_BACKUP0` (`0x2390024`):
+    * `SLOTA = BIT(2) (0x04)`, `SLOTA_BOOTABLE = BIT(4) (0x10)` -> `0x14`
+    * `SLOTB = BIT(3) (0x08)`, `SLOTB_BOOTABLE = BIT(5) (0x20)` -> `0x28`
+    * If `SLOTB_BOOTABLE` is not asserted, BL1 automatically clears `SLOTB`, warns `"try slot A"`, and falls back to Slot A (`0x14`), providing a hardware-level safety net.
+  * **Automated Tooling:** Added `flash-slot-b <IP>` and `boot-slot <A|B> <IP>` commands to [`build_kernel.sh`](file:///home/tung/Git/NanoKVM-Pro/support/scripts/build_kernel.sh) and Makefile targets `make kernel-flash-b` and `make kernel-boot-a` / `make kernel-boot-b`.
+- [x] **Step 14: Linux 4.19.325 Rebase, BL1 Token Architecture & Stable 1440p Capture:**
+  * **Linux 4.19.325 Rebase:** Successfully ported Axera AX630C MSP, NPU, VIN/VO, and peripheral drivers onto stable LTS `4.19.325` (`rebase-4.19.325-v2`), compiling and packaging into signed container `boot_signed.bin` (#15).
+  * **BL1 One-Shot Token & Fallback Demystified:** Traced Axera SPL (`meta/boot/bl1/core/boot/boot.c`) arbitration logic: BL1 consumes the `SLOTB_BOOTABLE` bit (0x20) immediately upon booting Slot B. If userspace does not re-assert it (`0x2390028=0x20`), subsequent boots automatically fall back to Golden Slot A (`0x14`). Hardened [`build_kernel.sh`](file:///home/tung/Git/NanoKVM-Pro/support/scripts/build_kernel.sh) to explicitly clear `BOOT_KERNEL_FAIL` (`0x80`) and stale slot bits before arming.
+  * **Hardware Register Reference Table:**
+    | Register | Address | Function |
+    | :--- | :--- | :--- |
+    | `TOP_CHIPMODE_GLB_BACKUP0` | `0x2390024` | Status Readback |
+    | `TOP_CHIPMODE_GLB_BACKUP0_SET` | `0x2390028` | Write-1-to-set |
+    | `TOP_CHIPMODE_GLB_BACKUP0_CLR` | `0x239002C` | Write-1-to-clear |
+    * Bits: `SLOTA=BIT(2) (0x04)`, `SLOTB=BIT(3) (0x08)`, `SLOTA_BOOTABLE=BIT(4) (0x10)`, `SLOTB_BOOTABLE=BIT(5) (0x20)`, `BOOT_KERNEL_FAIL=BIT(7) (0x80)`.
+    * Arm Slot B: `devmem 0x239002C 32 0x80 && devmem 0x239002C 32 0x14 && devmem 0x2390028 32 0x28 && fw_setenv bootsystem B`
+    * Arm Slot A: `devmem 0x239002C 32 0x80 && devmem 0x239002C 32 0x28 && devmem 0x2390028 32 0x14 && fw_setenv bootsystem A`
+  * **LT6911D Driver Stabilization:**
+    - Eliminated recursive 1,400 calls/sec I2C bus storms by removing recursive worker scheduling from `proc_hdmi_status_read()`.
+    - Protected internal SPI flash by returning static Desk-G identity (`NebE20020`) and serving cached EDID from RAM, preventing bus lockups during warm resets.
+    - Extended HPD power-cycle timing in driver init to cleanly signal connected host GPUs.
+  * **Live Verification in Slot B:**
+    - Active Kernel: `Linux kvm-b9c7 4.19.325 #15` (`0x2390024=0x28`, `bootsystem=B`).
+    - Video Capture: `2560x1440 @ 59 FPS`, status `stable`.
+    - Hardware Interrupts: `ax_proton_intt` firing actively at 60 FPS (`+122` int/s).
+    - WebUI API & Stream: `/api/vm/info` reports `pn: "NebE20020\n"`, and `/api/stream/mjpeg` streams full 157 KB JPEG frames.
+    - Slot A Failsafe: Golden kernel on `/dev/mmcblk0p14` and DTB on `/dev/mmcblk0p12` remain 100% untouched.
+  * **Fast Module Reload Pipeline (Zero Reflashing):**
+    ```bash
+    # 1. Compile module (~3s)
+    make -C support/kernel/linux/linux-4.19.125 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=drivers/misc modules
+    # 2. Deploy & reload live (~3s)
+    scp support/kernel/linux/linux-4.19.125/drivers/misc/lt6911_manage.ko root@<IP>:/kvmcomm/ko_4.19.325/
+    ssh root@<IP> "systemctl stop kvmcomm && rmmod lt6911_manage && insmod /kvmcomm/ko_4.19.325/lt6911_manage.ko && systemctl start kvmcomm"
+    ```
+- [x] **Step 15: End-to-End In-System Firmware Update Packaging (`make firmware-pkg` & `make firmware-flash`):**
+  * **Unified Recompile & Packaging Recipe:** Added [`support/scripts/package_firmware.sh`](file:///home/tung/Git/NanoKVM-Pro/support/scripts/package_firmware.sh) and Makefile targets `make firmware-pkg` (alias: `make update-pkg`) and `make firmware-flash IP=<ip>` (alias: `make update-flash`).
+  * **End-to-End Build Automation:** Runs full recompile of server, web frontend (Vite), Debian packages (`nanokvmpro` & `kvmcomm`), and Linux kernel & modules, then stages signed boot binaries (`boot_signed.bin`, DTB, `u-boot_signed.bin`), rootfs overlay, and version metadata.
+  * **Native Updater Compatibility:** Generates deterministic `b2sum.txt` manifest and parallel XZ compressed `build_dist/axera_firmware_v<VERSION>.tar.xz`, 100% compatible with NanoKVM WebUI manual update and `/kvmcomm/scripts/firmware_update.sh`.
+  * **Safe Live Flashing:** `make firmware-flash IP=<ip>` runs pre-flight diagnostics, verifies Slot A failsafe integrity, uploads the package, triggers native partition flashing (`axkernel.sh`, `axdtb.sh`, `axuboot.sh`), and reboots.
+
 
 

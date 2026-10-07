@@ -513,21 +513,16 @@ stage_modules() {
     fi
 
     local ko_kver_dir="${dest_dir}/kvmcomm/ko_${kver}"
-    local mod_dest_dir="${dest_dir}/lib/modules/${kver}/kernel/drivers/net/wireless/aic8800"
 
-    mkdir -p "${ko_kver_dir}" "${mod_dest_dir}"
+    mkdir -p "${ko_kver_dir}"
 
-    echo -e "${CYAN}==> Staging compiled kernel modules (${kver}) to ${dest_dir}...${RESET}"
+    echo -e "${CYAN}==> Staging compiled kernel modules (${kver}) to ${ko_kver_dir}...${RESET}"
     local count=0
 
     # Search and stage all compiled .ko files from kernel tree (excluding build scripts)
     while IFS= read -r -d '' ko_file; do
         cp -f "${ko_file}" "${ko_kver_dir}/"
         ((count++)) || true
-        # If it is aic8800 wireless driver, also stage in standard /lib/modules tree
-        if [[ "$(basename "${ko_file}")" =~ ^aic8800 ]]; then
-            cp -f "${ko_file}" "${mod_dest_dir}/"
-        fi
     done < <(find "${LINUX_SRC}" -type f -name "*.ko" -not -path "*/scripts/*" -print0 2>/dev/null)
 
     echo -e "${GREEN}[✓] Staged ${count} kernel modules to ${ko_kver_dir}${RESET}"
