@@ -97,6 +97,25 @@ update() {
         flash_image "$UBOOT_FILE"  /kvmcomm/scripts/axuboot.sh  /dev/mmcblk0p5  /dev/mmcblk0p6
         flash_image "$DTB_FILE"    /kvmcomm/scripts/axdtb.sh    /dev/mmcblk0p12 /dev/mmcblk0p13
         flash_image "$KERNEL_FILE" /kvmcomm/scripts/axkernel.sh /dev/mmcblk0p14 /dev/mmcblk0p15
+
+        # Arm active boot slot in AX630C persistent backup registers and U-Boot environment
+        local bootsystem
+        bootsystem=$(fw_printenv bootsystem 2>/dev/null | awk -F= '{print $2}')
+        [ -z "$bootsystem" ] && bootsystem="A"
+
+        echo "Arming boot slot ($bootsystem) in hardware registers..."
+        # Always clear BOOT_KERNEL_FAIL flag (0x80)
+        devmem 0x239002C 32 0x80 2>/dev/null || true
+
+        if [ "$bootsystem" = "B" ]; then
+            devmem 0x239002C 32 0x14 2>/dev/null || true
+            devmem 0x2390028 32 0x28 2>/dev/null || true
+            fw_setenv bootsystem B 2>/dev/null || true
+        else
+            devmem 0x239002C 32 0x28 2>/dev/null || true
+            devmem 0x2390028 32 0x14 2>/dev/null || true
+            fw_setenv bootsystem A 2>/dev/null || true
+        fi
     elif [ "$root_dev" = "/dev/mmcblk1p2" ]; then
         echo "Updating firmware for SD boot ..."
         cp "$UBOOT_FILE" /boot/uboot.bin
@@ -108,8 +127,9 @@ update() {
         exit 1
     fi
 
-    echo "Syncing overlay files to root filesystem ..."
-    cp -r overlay/boot/* /boot
+    if [ -d overlay/boot ]; then
+        cp -r overlay/boot/* /boot 2>/dev/null || true
+    fi
     rsync -a --exclude='/boot' overlay/ /
 
     touch /var/run/reboot-required

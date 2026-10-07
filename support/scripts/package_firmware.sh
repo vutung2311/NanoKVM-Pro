@@ -92,12 +92,12 @@ with zipfile.ZipFile('${BASE_AXP}') as z:
         exit 1
     fi
 
-    # 2. Stage Version & Boot Configs
-    echo -e "${CYAN}[+] Staging boot configs and version metadata...${RESET}"
+    # 2. Stage Version Metadata
+    echo -e "${CYAN}[+] Staging boot version metadata...${RESET}"
     mkdir -p "${stage_dir}/overlay/boot" "${stage_dir}/overlay/kvmcomm/scripts"
-    if [[ -d "${SUPPORT_DIR}/blobs/bootfs" ]]; then
-        cp -af "${SUPPORT_DIR}/blobs/bootfs/." "${stage_dir}/overlay/boot/"
-    fi
+    # Note: Do NOT copy support/blobs/bootfs here. Factory bootfs blobs contain
+    # first_time_boot, check_resize2fs, and stock configs which clobber live user
+    # WiFi/network configs and trigger destructive first-boot initialization.
     echo "nanokvm-pro-${build_date}-v${VERSION}" > "${stage_dir}/overlay/boot/ver"
 
     # Stage KVMComm scripts directly from package source tree
