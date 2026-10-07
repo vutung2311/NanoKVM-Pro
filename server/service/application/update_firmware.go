@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 )
 
 var firmwareRebootScheduler = scheduleFirmwareReboot
@@ -37,10 +39,39 @@ func installFirmwarePackage(packagePath string) error {
 }
 
 func scheduleFirmwareReboot(string) error {
-	if err := exec.Command("systemctl", "reboot").Start(); err != nil {
-		return fmt.Errorf("automatic reboot failed: %w", err)
-	}
+	armHardwareBootSlot()
+
+	go func() {
+		// Provide a brief grace period so in-flight HTTP status polling
+		// receives the reboot_scheduled state before services terminate.
+		time.Sleep(1500 * time.Millisecond)
+		_ = exec.Command("sync").Run()
+		if err := exec.Command("systemctl", "reboot").Run(); err != nil {
+			_ = exec.Command("reboot", "-f").Run()
+		}
+	}()
 	return nil
+}
+
+func armHardwareBootSlot() {
+	bootsystem := "A"
+	if out, err := exec.Command("fw_printenv", "bootsystem").Output(); err == nil {
+		parts := strings.Split(strings.TrimSpace(string(out)), "=")
+		if len(parts) == 2 && strings.TrimSpace(parts[1]) == "B" {
+			bootsystem = "B"
+		}
+	}
+
+	_ = exec.Command("devmem", "0x239002C", "32", "0x80").Run()
+	if bootsystem == "B" {
+		_ = exec.Command("devmem", "0x239002C", "32", "0x14").Run()
+		_ = exec.Command("devmem", "0x2390028", "32", "0x28").Run()
+		_ = exec.Command("fw_setenv", "bootsystem", "B").Run()
+	} else {
+		_ = exec.Command("devmem", "0x239002C", "32", "0x28").Run()
+		_ = exec.Command("devmem", "0x2390028", "32", "0x14").Run()
+		_ = exec.Command("fw_setenv", "bootsystem", "A").Run()
+	}
 }
 
 // limitedCommandOutput bounds logs returned to the API while still consuming

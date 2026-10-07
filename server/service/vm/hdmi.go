@@ -182,7 +182,7 @@ func enableHdmiPassthrough() error {
 	if err := os.WriteFile(LT6911HdmiPower, []byte("0"), 0644); err != nil {
 		return err
 	}
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	if err := os.WriteFile(LT6911LoopoutPower, []byte("1"), 0644); err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ func disableHdmiPassthrough() error {
 	if err := os.WriteFile(LT6911HdmiPower, []byte("0"), 0644); err != nil {
 		return err
 	}
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	if err := os.WriteFile(LT6911HdmiPower, []byte("1"), 0644); err != nil {
 		return err
 	}

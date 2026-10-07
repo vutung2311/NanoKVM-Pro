@@ -227,8 +227,12 @@ echo "$(date) - Starting kvmcomm service (PID:$$)" >>"$LOG_FILE"
 bootsystem=$(fw_printenv bootsystem 2>/dev/null | awk -F = '{ print $2 }')
 if [ "$bootsystem" = "B" ]; then
     devmem 0x239002C 32 0x80 2>/dev/null || true
+    devmem 0x239002C 32 0x14 2>/dev/null || true
     devmem 0x2390028 32 0x28 2>/dev/null || true
-    devmem 0x239002C 32 0x4 2>/dev/null || true
+else
+    devmem 0x239002C 32 0x80 2>/dev/null || true
+    devmem 0x239002C 32 0x28 2>/dev/null || true
+    devmem 0x2390028 32 0x14 2>/dev/null || true
 fi
 
 # ensure /bin/sh points to bash
@@ -307,12 +311,12 @@ if [ -f "$HDMI_PASSTHROUGH_CONF" ]; then
         echo "$(date) - Restoring HDMI passthrough: disabled" >>"$LOG_FILE"
         echo 0 > /proc/lt6911_info/loopout_power 2>/dev/null || true
         echo 0 > /proc/lt6911_info/hdmi_power 2>/dev/null || true
-        usleep 10000 2>/dev/null || sleep 0.01 2>/dev/null || true
+        usleep 100000 2>/dev/null || sleep 0.1 2>/dev/null || true
         echo 1 > /proc/lt6911_info/hdmi_power 2>/dev/null || true
     elif [ "$pt_val" = "1" ] || [ "$pt_val" = "on" ]; then
         echo "$(date) - Restoring HDMI passthrough: enabled" >>"$LOG_FILE"
         echo 0 > /proc/lt6911_info/hdmi_power 2>/dev/null || true
-        usleep 10000 2>/dev/null || sleep 0.01 2>/dev/null || true
+        usleep 100000 2>/dev/null || sleep 0.1 2>/dev/null || true
         echo 1 > /proc/lt6911_info/loopout_power 2>/dev/null || true
         echo 1 > /proc/lt6911_info/hdmi_power 2>/dev/null || true
     fi
