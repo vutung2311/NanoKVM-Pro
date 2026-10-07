@@ -1,0 +1,2 @@
+KERNEL=="mmcblk1p1", SUBSYSTEM=="block", ACTION=="add", TAG+="systemd", ENV{SYSTEMD_WANTS}="sdcard.mount"
+KERNEL=="mmcblk1p1", SUBSYSTEM=="block", ACTION=="remove", TAG+="systemd", ENV{SYSTEMD_WANTS}="sdcard.mount"

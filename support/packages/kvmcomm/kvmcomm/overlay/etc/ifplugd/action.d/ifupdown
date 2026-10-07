@@ -1,0 +1,89 @@
+#!/bin/sh
+set -e
+
+RESERVE_INET="192.168.90.1/22"
+
+clean_line() {
+    echo "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/\r//g'
+}
+
+calc_gw() {
+    addr="$1"
+    netid="$2"
+    IFS=. read a b c d <<EOF
+$addr
+EOF
+    ipnum=$(( (a<<24) + (b<<16) + (c<<8) + d ))
+    mask=$(( 0xFFFFFFFF << (32-netid) & 0xFFFFFFFF ))
+    gwnum=$(( (ipnum & mask) | 1 ))
+    echo "$(( (gwnum>>24)&255 )).$(( (gwnum>>16)&255 )).$(( (gwnum>>8)&255 )).$(( gwnum&255 ))"
+}
+
+ip_is_occupied() {
+    addr="$1"
+    iface="${2:-eth0}"
+
+    if command -v arping >/dev/null 2>&1; then
+        if arping -S 0.0.0.0 -q -c2 -I "$iface" "$addr" >/dev/null 2>&1; then
+            return 1
+        else
+            return 0
+        fi
+    else
+        if ping -c 1 -W 1 "$addr" >/dev/null 2>&1; then
+            return 1
+        else
+            return 0
+        fi
+    fi
+}
+
+start() {
+    if [ -e /boot/eth.nodhcp ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            line=$(clean_line "$line")
+            [ -z "$line" ] && continue
+            set -- $line
+            inet="$1"
+            gw="$2"
+            [ -z "$inet" ] && continue
+            addr=${inet%/*}
+            netid=${inet#*/}
+            [ -z "$gw" ] && gw=$(calc_gw "$addr" "$netid")
+
+            ip_is_occupied "$addr" eth0 || continue
+
+            ip a add "$inet" brd + dev eth0
+            ip r add default via "$gw" dev eth0
+            echo -e "nameserver $gw" >> /etc/resolv.conf
+            break
+        done < /boot/eth.nodhcp
+
+        ip a show dev eth0 | grep inet > /dev/null || {
+            dhclient -v eth0
+            ip a show dev eth0 | grep inet > /dev/null
+        } || {
+            inet=$RESERVE_INET
+            addr=${inet%/*}
+            ip a add "$inet" brd + dev eth0
+        } || exit 1
+    else
+        dhclient -v "$1"
+    fi
+}
+
+case "$2" in
+up)
+        echo "$1 Cable plugged in, requesting DHCP ..."
+        ip link set "$1" up
+        pkill -f "dhclient.*$1" || true
+        # dhclient -v "$1"
+        start "$1"
+        ;;
+down)
+        echo "$1 Cable unplugged, releasing DHCP ..."
+        pkill -f "dhclient.*$1" || true
+        ip addr flush dev "$1"
+        ip link set "$1" down
+        ;;
+esac

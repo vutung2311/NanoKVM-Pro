@@ -1,0 +1,35 @@
+#!/bin/bash
+set -e
+
+version_lt() {
+    [ "$1" = "$2" ] && return 1
+    local IFS=.
+    local i ver1=($1) ver2=($2)
+    for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do
+        ver1[i]=0
+    done
+    for ((i=0; i<${#ver2[@]}; i++)); do
+        if ((10#${ver1[i]} < 10#${ver2[i]})); then
+            return 0
+        elif ((10#${ver1[i]} > 10#${ver2[i]})); then
+            return 1
+        fi
+    done
+    return 1
+}
+
+systemctl disable nginx 2>/dev/null || true
+
+if [ "$(stat -c %d:%i /)" == "$(stat -c %d:%i /proc/1/root/.)" ]; then
+    systemctl stop nginx 2>/dev/null || true
+fi
+
+if [ -f /kvmapp/version ] && command -v tailscaled >/dev/null 2>&1; then
+    read -r current_version < /kvmapp/version
+
+    if version_lt "$current_version" "1.1.7" && \
+       systemctl is-active --quiet tailscaled && \
+       ! systemctl is-enabled --quiet tailscaled; then
+        systemctl enable tailscaled >/dev/null 2>&1 || true
+    fi
+fi

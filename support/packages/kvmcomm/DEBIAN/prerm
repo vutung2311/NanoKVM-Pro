@@ -1,0 +1,5 @@
+#!/bin/bash
+set -e
+if systemctl is-active --quiet kvmcomm.service; then
+    systemctl stop kvmcomm.service >/dev/null 2>&1
+fi

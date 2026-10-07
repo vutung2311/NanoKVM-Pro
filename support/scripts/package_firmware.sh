@@ -15,7 +15,6 @@ KERNEL_DIR="${SUPPORT_DIR}/kernel"
 LINUX_SRC="${KERNEL_DIR}/linux/linux-4.19.125"
 BASE_FIRMWARE_DIR="${SUPPORT_DIR}/base_firmware"
 BASE_AXP="${BASE_FIRMWARE_DIR}/20260529_NanoKVMPro_1_0_15.axp"
-OVERLAY_DIR="${SUPPORT_DIR}/scripts/build_image/overlay"
 DIST_DIR="${REPO_ROOT}/build_dist"
 
 SIGNED_BOOT="${KERNEL_DIR}/boot_signed.bin"
@@ -68,56 +67,47 @@ build_firmware_package() {
         exit 1
     fi
 
-    if [[ ! -f "${BASE_AXP}" ]]; then
-        echo -e "${YELLOW}[!] Base AXP not found at: ${BASE_AXP}. Fetching base firmware...${RESET}"
-        make -C "${REPO_ROOT}" fetch-base
-    fi
-
+    local uboot_blob="${SUPPORT_DIR}/blobs/bootloader/u-boot_signed.bin"
     local stage_dir
     stage_dir=$(mktemp -d -t nanokvm_fw_pkg_XXXXXX)
     mkdir -p "${stage_dir}/firmware" "${stage_dir}/overlay/boot"
 
     # 1. Stage Firmware Binaries
-    echo -e "${CYAN}[+] Staging signed kernel, DTB, and extracting U-Boot...${RESET}"
+    echo -e "${CYAN}[+] Staging signed kernel, DTB, and U-Boot...${RESET}"
     cp -f "${SIGNED_BOOT}" "${stage_dir}/firmware/boot_signed.bin"
     cp -f "${SIGNED_DTB}" "${stage_dir}/firmware/AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.dtb"
 
-    # Extract U-Boot using Python zipfile (independent of host unzip utility)
-    python3 -c "
-import zipfile, sys
+    if [[ -f "${uboot_blob}" ]]; then
+        cp -f "${uboot_blob}" "${stage_dir}/firmware/u-boot_signed.bin"
+    elif [[ -f "${BASE_AXP}" ]]; then
+        python3 -c "
+import zipfile
 with zipfile.ZipFile('${BASE_AXP}') as z:
     with open('${stage_dir}/firmware/u-boot_signed.bin', 'wb') as f:
         f.write(z.read('u-boot_signed.bin'))
 "
-    if [[ ! -s "${stage_dir}/firmware/u-boot_signed.bin" ]]; then
-        echo -e "${RED}[✗] Failed to extract u-boot_signed.bin from base AXP.${RESET}" >&2
+    else
+        echo -e "${RED}[✗] U-Boot binary not found at ${uboot_blob} or in base AXP.${RESET}" >&2
         rm -rf "${stage_dir}"
         exit 1
     fi
 
-    # 2. Stage Version & Boot Overlay
-    echo -e "${CYAN}[+] Staging rootfs overlay and version metadata...${RESET}"
-    if [[ -d "${OVERLAY_DIR}/boot" ]]; then
-        cp -af "${OVERLAY_DIR}/boot"/* "${stage_dir}/overlay/boot/" 2>/dev/null || true
+    # 2. Stage Version & Boot Configs
+    echo -e "${CYAN}[+] Staging boot configs and version metadata...${RESET}"
+    mkdir -p "${stage_dir}/overlay/boot" "${stage_dir}/overlay/kvmcomm/scripts"
+    if [[ -d "${SUPPORT_DIR}/blobs/bootfs" ]]; then
+        cp -af "${SUPPORT_DIR}/blobs/bootfs/." "${stage_dir}/overlay/boot/"
     fi
     echo "nanokvm-pro-${build_date}-v${VERSION}" > "${stage_dir}/overlay/boot/ver"
 
-    # Sync custom scripts and web/server assets from overlay dir if present
-    if [[ -d "${OVERLAY_DIR}/kvmcomm" ]]; then
-        mkdir -p "${stage_dir}/overlay/kvmcomm"
-        cp -af "${OVERLAY_DIR}/kvmcomm"/* "${stage_dir}/overlay/kvmcomm/" 2>/dev/null || true
-    fi
-    if [[ -d "${OVERLAY_DIR}/kvmapp" ]]; then
-        mkdir -p "${stage_dir}/overlay/kvmapp"
-        cp -af "${OVERLAY_DIR}/kvmapp"/* "${stage_dir}/overlay/kvmapp/" 2>/dev/null || true
+    # Stage KVMComm scripts directly from package source tree
+    if [[ -d "${SUPPORT_DIR}/packages/kvmcomm/kvmcomm/scripts" ]]; then
+        cp -af "${SUPPORT_DIR}/packages/kvmcomm/kvmcomm/scripts/." "${stage_dir}/overlay/kvmcomm/scripts/"
     fi
 
     # Ensure executable permissions on all staged scripts and binaries
     find "${stage_dir}/overlay" -type f -name "*.sh" -exec chmod 755 {} +
     find "${stage_dir}/overlay" -type f -name "*.py" -exec chmod 755 {} +
-    if [[ -f "${stage_dir}/overlay/kvmapp/server/NanoKVM-Server" ]]; then
-        chmod 755 "${stage_dir}/overlay/kvmapp/server/NanoKVM-Server"
-    fi
 
     # 3. Stage Compiled Kernel Modules (via centralized build_kernel.sh stage-modules)
     echo -e "${CYAN}[+] Staging compiled kernel modules for ${kver}...${RESET}"
