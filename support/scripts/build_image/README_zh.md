@@ -18,13 +18,46 @@
 
 ### 安装依赖
 
+#### 自动安装（推荐所有发行版使用）：
+
+在项目根目录下执行：
+
 ```bash
-sudo apt update
-
-sudo apt install -y android-sdk-libsparse-utils qemu-user-static
-
-pip3 install axp-tools
+make setup-tooling
 ```
+
+该命令会自动识别主机发行版（CachyOS/Arch、Debian/Ubuntu、Fedora），安装所需系统软件包，配置 Python 独立虚拟环境（`.venv`），并配置 ARM64 交叉编译工具链。
+
+可随时执行以下命令检查环境依赖完整性：
+
+```bash
+make check-tools
+```
+
+#### 各发行版手动安装：
+
+* **Arch Linux / CachyOS / Manjaro:**
+  ```bash
+  pkexec pacman -S --needed dpkg pnpm qemu-user-static qemu-user-static-binfmt android-tools patchelf
+  ```
+
+* **Ubuntu / Debian:**
+  ```bash
+  sudo apt update
+  sudo apt install -y android-sdk-libsparse-utils qemu-user-static binfmt-support dpkg-dev patchelf
+  ```
+
+* **Fedora / RHEL:**
+  ```bash
+  sudo dnf install -y android-tools qemu-user-static dpkg-dev patchelf
+  ```
+
+* **Python 依赖环境（虚拟环境）：**
+  ```bash
+  python3 -m venv support/scripts/build_image/.venv
+  support/scripts/build_image/.venv/bin/pip install axp-tools tqdm
+  ```
+
 
 ## 快速开始
 

@@ -21,6 +21,10 @@ latest/
 NanoKVM-Server
 support/scripts/NanoKVM-Pro
 support/toolchains/
+support/sdk/
+support/scripts/kernel_tools/
+support/kernel/*_signed.bin
+support/kernel/*_signed.dtb
 support/base_firmware/*.axp
 support/base_firmware/*.tar.gz
 support/base_firmware/axp_temp/
@@ -33,6 +37,9 @@ support/base_firmware/nanokvm_pro_*
 mount_point/
 support/scripts/build_image/overlay/kvmapp/server/NanoKVM-Server
 support/scripts/build_image/overlay/kvmapp/server/web/
+support/scripts/build_image/overlay/kvmcomm/ko_*/
+support/scripts/build_image/overlay/lib/
+images/
 
 # IDE/Editor
 .idea
