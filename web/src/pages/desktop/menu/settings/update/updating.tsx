@@ -59,12 +59,19 @@ export const Updating = ({
             return;
           }
 
-          if (data.state === 'succeeded' || data.state === 'reboot_scheduled') {
+          if (data.state === 'reboot_scheduled') {
+            terminal = true;
+            restart();
+            return;
+          }
+
+          if (data.state === 'succeeded') {
             terminal = true;
             setStep(2);
             setProgress(100);
             setStatus('finish');
             finishManualUpdate();
+            return;
           }
         })
         // A restart can temporarily make the API unavailable; wait for the next poll instead.

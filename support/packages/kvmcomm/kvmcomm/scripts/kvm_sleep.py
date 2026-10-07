@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import time
 import asyncio
 import aiofiles
 import argparse
@@ -51,6 +52,29 @@ async def set_lt6911_power(on: bool):
             await f.write("1" if on else "0")
     except Exception as e:
         logger.error(f"Failed to write {path}: {e}")
+
+
+async def wait_for_driver_ready(timeout_sec: float = 30.0) -> bool:
+    """Wait for lt6911_manage kernel module to be fully loaded and operational."""
+    start = time.time()
+    initstate_path = "/sys/module/lt6911_manage/initstate"
+    power_proc_path = "/proc/lt6911_info/power"
+
+    logger.info("Waiting for lt6911_manage driver to be ready...")
+    while time.time() - start < timeout_sec:
+        try:
+            if os.path.exists(initstate_path) and os.path.exists(power_proc_path):
+                async with aiofiles.open(initstate_path, "r") as f:
+                    content = (await f.read()).strip()
+                    if content == "live":
+                        logger.info("lt6911_manage driver is live and ready")
+                        return True
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+
+    logger.warning("Timed out waiting for lt6911_manage driver; proceeding anyway")
+    return False
 
 
 async def get_lt6911_power() -> bool:
@@ -174,10 +198,14 @@ class PowerController:
     async def _do_set(self, on: bool):
         if (await get_lt6911_power()) == on:
             return
-        await (set_lt6911_power(True) if on else set_lt86102_power(False))
-        await (set_lt86102_power(False) if on else set_lt6911_power(False))
-        await asyncio.sleep(0.1)
-        await set_lt86102_power(True)
+        if on:
+            await set_lt6911_power(True)
+            await set_lt86102_power(False)
+            await asyncio.sleep(0.1)
+            await set_lt86102_power(True)
+        else:
+            await set_lt86102_power(False)
+            await set_lt6911_power(False)
         return
 
 
@@ -265,6 +293,27 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     await writer.wait_closed()
 
 
+async def monitor_activity_loop():
+    """
+    Periodically check video encoding pipeline (venc) and UI state.
+    Provides a 60-second grace period on boot to allow host display negotiation.
+    """
+    await asyncio.sleep(60)
+    while True:
+        try:
+            venc = await is_venc_working()
+            ui = await is_strip_working()
+            if venc != gstate["venc_act"]:
+                await update_state("venc_act", venc)
+            if ui != gstate["ui_ivps_act"]:
+                await update_state("ui_ivps_act", ui)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug(f"Error in monitor_activity_loop: {e}")
+        await asyncio.sleep(3)
+
+
 async def main():
     os.makedirs(os.path.dirname(SOCKET_PATH), exist_ok=True)
     if os.path.exists(SOCKET_PATH):
@@ -273,16 +322,20 @@ async def main():
     server = await asyncio.start_unix_server(handle_client, path=SOCKET_PATH)
     logger.info(f"Server started on {SOCKET_PATH}")
 
+    # Ensure lt6911_manage kernel module has completed initialization
+    await wait_for_driver_ready()
+
     gstate["venc_act"] = await is_venc_working()
     gstate["ui_ivps_act"] = await is_strip_working()
-    need_power_on = any(gstate.values())
     logger.info(f"Initial state: venc_act={gstate['venc_act']}, ui_ivps_act={gstate['ui_ivps_act']}")
 
     await _power_controller.start(initial_state=await get_lt6911_power())
 
-    if not need_power_on:
-        logger.info("No activity detected, setting power to OFF")
-        await set_power(False)
+    # Keep HDMI powered on at startup so host GPU detects monitor and establishes link
+    if not (await get_lt6911_power()):
+        await set_power(True)
+
+    monitor_task = asyncio.create_task(monitor_activity_loop())
 
     try:
         async with server:
@@ -292,6 +345,12 @@ async def main():
     except KeyboardInterrupt:
         logger.info("Exit requested by user")
     finally:
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
+
         await set_power(True)
 
         if os.path.exists(SOCKET_PATH):
