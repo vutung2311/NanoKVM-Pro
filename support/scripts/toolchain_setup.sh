@@ -1,10 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Determine absolute paths
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." &>/dev/null && pwd -P)"
+CONFIG_FILE="${SCRIPT_DIR}/config.ini"
+GETCONFIG_PY="${SCRIPT_DIR}/getconfig.py"
+TOOLCHAINS_DIR="${SCRIPT_DIR}/../toolchains"
+
+# Locate Python binary
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
+
+# Operational flags
+NON_INTERACTIVE=false
+FORCE_REINSTALL=false
+CHECK_ONLY=false
+
+# Parse CLI options
+for arg in "$@"; do
+    case "$arg" in
+        -y|--yes|--non-interactive)
+            NON_INTERACTIVE=true
+            ;;
+        -f|--force|--reinstall)
+            FORCE_REINSTALL=true
+            ;;
+        -c|--check)
+            CHECK_ONLY=true
+            ;;
+        -h|--help)
+            echo "Usage: $(basename "$0") [options]"
+            echo "Options:"
+            echo "  -y, --yes, --non-interactive  Run non-interactively (skip re-install if valid)"
+            echo "  -f, --force, --reinstall      Force re-download and re-install of the toolchain"
+            echo "  -c, --check                   Check if toolchain is installed and valid (exit 0/1)"
+            echo "  -h, --help                    Show this help message"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $arg"
+            exit 1
+            ;;
+    esac
+done
+
 # Function to check if an executable exists and is executable
 check_executable() {
     local exe_path=$1
-    local exe_name=$(basename "$exe_path")
+    local exe_name
+    exe_name=$(basename "$exe_path")
 
     if [[ ! -x "$exe_path" ]]; then
         echo "Error: Executable file does not exist or is not executable [$exe_name]"
@@ -54,8 +98,9 @@ gen_toolchain_path() {
     cxx="${target_dir}/${cxx_path}"
     ld="${target_dir}/${ld_path}"
 
-    # Create toolchain.ini file
-    cat <<EOF >../toolchains/toolchain.ini
+    # Create toolchain.ini file in absolute directory
+    mkdir -p "${TOOLCHAINS_DIR}"
+    cat <<EOF >"${TOOLCHAINS_DIR}/toolchain.ini"
 [toolchain]
 cc = $cc
 cxx = $cxx
@@ -65,20 +110,36 @@ EOF
     return 0
 }
 
-# Function to install libopus for ARM64 cross-compilation
+# Function to install libopus for ARM64 cross-compilation into target sysroot
 install_libopus() {
     local target_dir=$1
     local sysroot="${target_dir}/aarch64-none-linux-gnu/libc"
-    local temp_dir=$(mktemp -d)
-    
-    echo "Installing libopus for ARM64..."
-    
+
+    # Check if libopus already installed in sysroot
+    if [[ -f "${sysroot}/usr/include/opus/opus.h" ]] && { [[ -f "${sysroot}/usr/lib/libopus.so" ]] || [[ -f "${sysroot}/usr/lib/libopus.a" ]]; }; then
+        echo "libopus for ARM64 already present in target sysroot, skipping download."
+        return 0
+    fi
+
+    echo "Installing target ARM64 libopus sysroot libraries (for AX630C Ubuntu 22.04 LTS target)..."
+
+    # Verify prerequisite tools for unpacking deb
+    for tool in curl ar tar; do
+        if ! command -v "$tool" &>/dev/null; then
+            echo "Error: Required tool '$tool' is missing (needed to unpack target libraries)."
+            return 1
+        fi
+    done
+
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    trap 'cd /; rm -rf "${temp_dir:-}"' RETURN INT TERM
+
     # Read libopus URLs from config, with defaults for backward compatibility
-    local config_file="./config.ini"
     local libopus_url libopus_dev_url
-    libopus_url=$(./getconfig.py "$config_file" "libopus" "url")
-    libopus_dev_url=$(./getconfig.py "$config_file" "libopus" "dev_url")
-    
+    libopus_url=$("$PYTHON_BIN" "$GETCONFIG_PY" "$CONFIG_FILE" "libopus" "url" 2>/dev/null || true)
+    libopus_dev_url=$("$PYTHON_BIN" "$GETCONFIG_PY" "$CONFIG_FILE" "libopus" "dev_url" 2>/dev/null || true)
+
     # Use default values if not configured
     if [[ -z "$libopus_url" ]]; then
         libopus_url="https://ports.ubuntu.com/ubuntu-ports/pool/main/o/opus/libopus0_1.3.1-0.1build2_arm64.deb"
@@ -86,9 +147,9 @@ install_libopus() {
     if [[ -z "$libopus_dev_url" ]]; then
         libopus_dev_url="https://ports.ubuntu.com/ubuntu-ports/pool/main/o/opus/libopus-dev_1.3.1-0.1build2_arm64.deb"
     fi
-    
+
     cd "$temp_dir"
-    
+
     # Download libopus0
     echo "Downloading libopus0..."
     if ! curl -sL -o libopus0.deb "$libopus_url"; then
@@ -97,7 +158,7 @@ install_libopus() {
         rm -rf "$temp_dir"
         return 1
     fi
-    
+
     # Download libopus-dev
     echo "Downloading libopus-dev..."
     if ! curl -sL -o libopus-dev.deb "$libopus_dev_url"; then
@@ -106,7 +167,7 @@ install_libopus() {
         rm -rf "$temp_dir"
         return 1
     fi
-    
+
     # Extract libopus0
     mkdir -p libopus0
     cd libopus0
@@ -119,7 +180,7 @@ install_libopus() {
         tar xzf data.tar.gz
     fi
     cd ..
-    
+
     # Extract libopus-dev
     mkdir -p libopus-dev
     cd libopus-dev
@@ -132,28 +193,28 @@ install_libopus() {
         tar xzf data.tar.gz
     fi
     cd ..
-    
+
     # Install to sysroot - libraries
     if [[ -d libopus0/usr/lib/aarch64-linux-gnu ]]; then
         mkdir -p "${sysroot}/usr/lib"
         cp -a libopus0/usr/lib/aarch64-linux-gnu/libopus.so* "${sysroot}/usr/lib/" 2>/dev/null || true
     fi
-    
+
     # Install to sysroot - headers and static library
     if [[ -d libopus-dev/usr/include/opus ]]; then
         mkdir -p "${sysroot}/usr/include"
         cp -a libopus-dev/usr/include/* "${sysroot}/usr/include/" 2>/dev/null || true
-        
+
         if [[ -d libopus-dev/usr/lib/aarch64-linux-gnu ]]; then
             cp -a libopus-dev/usr/lib/aarch64-linux-gnu/libopus.a "${sysroot}/usr/lib/" 2>/dev/null || true
             cp -a libopus-dev/usr/lib/aarch64-linux-gnu/pkgconfig "${sysroot}/usr/lib/" 2>/dev/null || true
         fi
     fi
-    
+
     # Cleanup
     cd - > /dev/null
     rm -rf "$temp_dir"
-    
+
     echo "libopus installation completed"
     return 0
 }
@@ -168,7 +229,7 @@ gen_conan_profile() {
     cxx="${target_dir}/${cxx_path}"
     ld="${target_dir}/${ld_path}"
 
-    cat <<EOF >./NanoKVM-Pro
+    cat <<EOF >"${SCRIPT_DIR}/NanoKVM-Pro"
 [settings]
 os=Linux
 arch=armv8
@@ -220,21 +281,28 @@ prompt_reinstall() {
 
 # Main installation process
 main() {
-    local config_file="./config.ini"
+    if [[ -z "$PYTHON_BIN" ]]; then
+        echo "Error: Python 3 or Python is required to read configuration."
+        exit 1
+    fi
 
-    # Parse configuration (unchanged)
+    if [[ ! -f "$CONFIG_FILE" || ! -f "$GETCONFIG_PY" ]]; then
+        echo "Error: Config file ($CONFIG_FILE) or helper script ($GETCONFIG_PY) not found."
+        exit 1
+    fi
+
+    # Parse configuration
     local section="toolchain"
     local name url sha256
-    name=$(./getconfig.py "$config_file" "$section" "name")
-    url=$(./getconfig.py "$config_file" "$section" "url")
-    sha256=$(./getconfig.py "$config_file" "$section" "sha256")
+    name=$("$PYTHON_BIN" "$GETCONFIG_PY" "$CONFIG_FILE" "$section" "name")
+    url=$("$PYTHON_BIN" "$GETCONFIG_PY" "$CONFIG_FILE" "$section" "url")
+    sha256=$("$PYTHON_BIN" "$GETCONFIG_PY" "$CONFIG_FILE" "$section" "sha256")
 
-    local cc_path cxx_path ld_path
-    cc_path=$(./getconfig.py "$config_file" "$section" "cc")
-    cxx_path=$(./getconfig.py "$config_file" "$section" "cxx")
-    ld_path=$(./getconfig.py "$config_file" "$section" "ld")
+    cc_path=$("$PYTHON_BIN" "$GETCONFIG_PY" "$CONFIG_FILE" "$section" "cc")
+    cxx_path=$("$PYTHON_BIN" "$GETCONFIG_PY" "$CONFIG_FILE" "$section" "cxx")
+    ld_path=$("$PYTHON_BIN" "$GETCONFIG_PY" "$CONFIG_FILE" "$section" "ld")
 
-    # Validate key fields (unchanged)
+    # Validate key fields
     if [[ -z "$name" || -z "$url" || -z "$sha256" ]]; then
         echo "Error: Missing necessary fields in configuration file"
         echo "Parsed results:"
@@ -248,21 +316,47 @@ main() {
         exit 1
     fi
 
-    # Prepare installation directory (added installation detection)
-    local script_dir target_dir
-    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)
-    target_dir="${script_dir}/../toolchains/${name}"
+    local target_dir="${TOOLCHAINS_DIR}/${name}"
 
-    # Added installation detection and user interaction
+    # Check-only mode
+    if [[ "$CHECK_ONLY" == "true" ]]; then
+        if is_installed "$target_dir" && validate_toolchain "$target_dir" >/dev/null 2>&1; then
+            echo "Toolchain is installed and valid: ${target_dir}"
+            exit 0
+        else
+            echo "Toolchain is NOT installed or invalid."
+            exit 1
+        fi
+    fi
+
+    # Installation detection and handling
     if is_installed "$target_dir"; then
-        prompt_reinstall "$target_dir"
+        if [[ "$FORCE_REINSTALL" == "true" ]]; then
+            echo "Force reinstall requested. Removing old toolchain..."
+            rm -rf "$target_dir"
+            mkdir -p "$target_dir"
+        elif [[ "$NON_INTERACTIVE" == "true" ]]; then
+            if validate_toolchain "$target_dir" >/dev/null 2>&1; then
+                echo "Toolchain already installed and valid: $(basename "$target_dir")"
+                gen_toolchain_path "$target_dir"
+                install_libopus "$target_dir"
+                exit 0
+            else
+                echo "Existing toolchain failed validation; reinstalling..."
+                rm -rf "$target_dir"
+                mkdir -p "$target_dir"
+            fi
+        else
+            prompt_reinstall "$target_dir"
+        fi
     else
         mkdir -p "$target_dir"
     fi
 
-    # Download file (supports resuming download, unchanged)
+    # Download file (supports resuming download)
     local temp_file
     temp_file=$(mktemp "${TMPDIR:-/tmp}/toolchain.XXXXXX")
+    trap 'rm -f "${temp_file:-}"' EXIT INT TERM
     echo "Downloading toolchain: ${url}"
     if ! curl -#L -o "$temp_file" "$url"; then
         echo "Download failed, please check:"
@@ -273,7 +367,7 @@ main() {
         exit 1
     fi
 
-    # Hash verification (unchanged)
+    # Hash verification
     echo "Verifying file integrity..."
     local computed_sha256
     computed_sha256=$(sha256sum "$temp_file" | awk '{print $1}')
@@ -285,7 +379,7 @@ main() {
         exit 1
     fi
 
-    # Extract installation (unchanged)
+    # Extract installation
     echo "Installing to: ${target_dir}"
     if ! tar -xJf "$temp_file" -C "$target_dir" --strip-components=1; then
         echo "Extraction failed, possible reasons:"
@@ -300,7 +394,6 @@ main() {
     if ! validate_toolchain "$target_dir"; then
         echo "Detected damaged installation, triggering reinstallation..."
         rm -rf "$target_dir"
-        # Re-execute installation process
         main "$@"
         return
     fi
@@ -313,8 +406,8 @@ main() {
         return
     fi
 
-    # Install additional libraries for cross-compilation
+    # Install additional libraries for cross-compilation into target sysroot
     install_libopus "$target_dir"
 }
 
-main
+main "$@"

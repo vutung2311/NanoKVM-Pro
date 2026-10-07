@@ -1,0 +1,3 @@
+[submodule "support/kernel"]
+	path = support/kernel
+	url = https://github.com/vutung2311/maix_ax620e_sdk_kernel.git
