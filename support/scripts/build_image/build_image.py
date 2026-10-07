@@ -120,7 +120,10 @@ def replace_axp(axp_file, replacements, output=None, work_dir=None):
 
     if os.path.exists(temp_dir):
         assert_no_mounts_under(temp_dir)
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            subprocess.run(SUDO + ["rm", "-rf", temp_dir], check=True)
     os.makedirs(temp_dir, exist_ok=True)
     os.makedirs(mount_point, exist_ok=True)
 
@@ -169,18 +172,24 @@ def replace_axp(axp_file, replacements, output=None, work_dir=None):
             remove_files(mount_point=mount_point, remove_file_list=args.remove_file)
 
         if args.app:
-            subprocess.run(SUDO + ["rsync", "-av", f"{args.app}/", f"{mount_point}/root"], check=True)
+            subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks", f"{args.app}/", f"{mount_point}/root"], check=True)
             run_chroot_commands(mount_point=mount_point, commands=["dpkg -i /root/*.deb"])
             run_chroot_commands(mount_point=mount_point, commands=["rm -f /root/*.deb"])
             run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /root/.kvmcache"])
-            subprocess.run(SUDO + ["rsync", "-av", f"{args.app}/", f"{mount_point}/root/.kvmcache"], check=True)
+            subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks", f"{args.app}/", f"{mount_point}/root/.kvmcache"], check=True)
 
         if args.overlay:
-            subprocess.run(SUDO + ["rsync", "-av",
+            subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks",
                 "--exclude=boot/",
                 f"{args.overlay}/",
                 f"{mount_point}/"
             ], check=True)
+
+        # Usrmerge integrity check: ensure /lib, /bin, /sbin remain symlinks
+        for sym in ["lib", "bin", "sbin"]:
+            sym_path = os.path.join(mount_point, sym)
+            if not os.path.islink(sym_path):
+                raise RuntimeError(f"Usrmerge integrity failure: {sym_path} is not a symlink! Overlay corrupted rootfs structure.")
 
         run_chroot_commands(mount_point=mount_point, commands=["apt update && apt install --reinstall -y ca-certificates && update-ca-certificates || true"])
         run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/ssh.service"])

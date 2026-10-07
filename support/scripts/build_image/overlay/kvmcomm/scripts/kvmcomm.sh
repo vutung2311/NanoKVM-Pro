@@ -77,11 +77,13 @@ start_kvm_vin() {
         echo "$(date) - nanokvm.service is active, restarting..." >>"$LOG_FILE"
         stop_service_and_wait nanokvm.service
         "${APP_ROOT}/vin/kvm_vin" &
+        sleep 0.5
         systemctl start nanokvm.service
     elif systemctl is-active --quiet kvmd.service; then
         echo "$(date) - kvmd.service is active, restarting..." >>"$LOG_FILE"
         stop_service_and_wait kvmd.service
         "${APP_ROOT}/vin/kvm_vin" &
+        sleep 0.5
         systemctl start kvmd.service
     else
         "${APP_ROOT}/vin/kvm_vin" &
@@ -115,14 +117,21 @@ unload_ko() {
 }
 
 load_ko() {
-    local ko_path="$1"
-    local ko_name
+    local ko_input="$1"
+    local ko_path="$ko_input"
+    local kver
+    kver=$(uname -r)
+    local specific_path="/kvmcomm/ko_${kver}/$(basename "$ko_input")"
+    if [ -f "$specific_path" ]; then
+        ko_path="$specific_path"
+    fi
 
     if [ ! -f "$ko_path" ]; then
         echo "$(date) - Error: Kernel module file '$ko_path' not found." >>"$LOG_FILE"
         return 1
     fi
 
+    local ko_name
     ko_name=$(basename "$ko_path" .ko)
 
     if lsmod | grep -q "^$ko_name"; then
@@ -214,6 +223,14 @@ check_firmware_update() {
 mkdir -p "$LOG_DIR"
 echo "$(date) - Starting kvmcomm service (PID:$$)" >>"$LOG_FILE"
 
+# Ensure active boot slot remains armed after successful boot
+bootsystem=$(fw_printenv bootsystem 2>/dev/null | awk -F = '{ print $2 }')
+if [ "$bootsystem" = "B" ]; then
+    devmem 0x239002C 32 0x80 2>/dev/null || true
+    devmem 0x2390028 32 0x28 2>/dev/null || true
+    devmem 0x239002C 32 0x4 2>/dev/null || true
+fi
+
 # ensure /bin/sh points to bash
 shell_target=$(readlink /bin/sh)
 if [ "$shell_target" != "bash" ] && [ "$shell_target" != "/bin/bash" ]; then
@@ -269,12 +286,17 @@ read_numeric_param "/boot/force_fps" force_fps
 
 [ -z "$INS_MOD_PARAMS" ] && [ -n "$force_fps" ] && INS_MOD_PARAMS="force_fps=$force_fps"
 
+LT6911_KO="/kvmcomm/ko/lt6911_manage.ko"
+if [ -f "/kvmcomm/ko_$(uname -r)/lt6911_manage.ko" ]; then
+    LT6911_KO="/kvmcomm/ko_$(uname -r)/lt6911_manage.ko"
+fi
+
 if [ -n "$INS_MOD_PARAMS" ]; then
-    echo "$(date) - Loading lt6911_manage.ko with params: $INS_MOD_PARAMS" >>"$LOG_FILE"
-    insmod /kvmcomm/ko/lt6911_manage.ko $INS_MOD_PARAMS
+    echo "$(date) - Loading $LT6911_KO with params: $INS_MOD_PARAMS" >>"$LOG_FILE"
+    insmod "$LT6911_KO" $INS_MOD_PARAMS || (sleep 1 && insmod "$LT6911_KO" $INS_MOD_PARAMS) || true
 else
-    echo "$(date) - Loading lt6911_manage.ko with default parameters" >>"$LOG_FILE"
-    insmod /kvmcomm/ko/lt6911_manage.ko
+    echo "$(date) - Loading $LT6911_KO with default parameters" >>"$LOG_FILE"
+    insmod "$LT6911_KO" || (sleep 1 && insmod "$LT6911_KO") || true
 fi
 
 # Restore HDMI passthrough state if configured
@@ -300,6 +322,7 @@ ver=$(cat /boot/ver | awk -F- '{print $5}' | sed 's/^v//')
 if ! version_lt "$ver" "1.0.12"; then
     load_ko /kvmcomm/ko/wireguard.ko
 fi
+
 
 start_kvm_vin
 
