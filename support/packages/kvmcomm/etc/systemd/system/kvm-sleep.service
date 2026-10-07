@@ -1,0 +1,15 @@
+[Unit]
+Description=NanoKVM KVM Sleep Service
+Requires=kvmcomm.service
+After=kvmcomm.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /kvmcomm/scripts/kvm_sleep.py --log-level=WARNING
+Restart=on-failure
+RestartSec=5
+SyslogIdentifier=kvm-sleep
+User=root
+
+[Install]
+WantedBy=multi-user.target

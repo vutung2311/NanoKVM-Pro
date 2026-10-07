@@ -13,7 +13,8 @@ SERVER_DIR      ?= $(ROOT_DIR)/server
 WEB_DIR         ?= $(ROOT_DIR)/web
 SUPPORT_DIR     ?= $(ROOT_DIR)/support
 BUILD_IMAGE_DIR ?= $(SUPPORT_DIR)/scripts/build_image
-OVERLAY_DIR     ?= $(BUILD_IMAGE_DIR)/overlay
+# Optional user overlay directory (if custom files need to be injected into image)
+OVERLAY_DIR     ?=
 VERSION         ?= 1.2.15
 VERSION_UNDERSCORE := $(subst .,_,$(VERSION))
 BASE_FIRMWARE_DIR ?= $(SUPPORT_DIR)/base_firmware
@@ -21,6 +22,14 @@ DIST_DIR        ?= $(ROOT_DIR)/build_dist
 APP_DIR         ?= $(DIST_DIR)/nanokvm_pro_$(VERSION)
 BASE_APP_DIR    ?= $(BASE_FIRMWARE_DIR)/nanokvm_pro_$(VERSION)
 WORK_DIR        ?= /var/tmp/nanokvm_build_axp
+
+# Repository Silicon & Hardware Blobs
+BLOBS_DIR           ?= $(SUPPORT_DIR)/blobs
+BLOBS_BOOTLOADER_DIR ?= $(BLOBS_DIR)/bootloader
+BLOBS_BOOTFS_DIR    ?= $(BLOBS_DIR)/bootfs
+BLOBS_PACKAGES_DIR  ?= $(BLOBS_DIR)/packages
+BLOBS_ROOTFS_DIR    ?= $(BLOBS_DIR)/rootfs
+BASE_ROOTFS         ?= $(DIST_DIR)/ubuntu_rootfs.ext4
 
 # Release Artifact File Names & Templates
 BASE_AXP        ?= $(BASE_FIRMWARE_DIR)/20260529_NanoKVMPro_1_0_15.axp
@@ -77,7 +86,7 @@ RESET := \033[0m
 # ------------------------------------------------------------------------------
 # Phony Targets
 # ------------------------------------------------------------------------------
-.PHONY: all help check-tools setup-tooling fetch-base build server client web overlay deb app-pkg web-pkg image-axp image-raw image-img image release deploy deploy-all clean distclean flash-info check-upstream rebase-upstream sync-upstream firmware-pkg update-pkg firmware-flash update-flash kernel-check kernel-flash-b kernel-boot-a kernel-boot-b
+.PHONY: all help check-tools setup-tooling fetch-base build server client web overlay deb app-pkg web-pkg rootfs image-axp image-raw image-img image release deploy deploy-all clean distclean flash-info check-upstream rebase-upstream sync-upstream firmware-pkg update-pkg firmware-flash update-flash kernel-check kernel-flash-b kernel-boot-a kernel-boot-b
 
 # Default Target
 all: help
@@ -171,22 +180,10 @@ web:
 # ------------------------------------------------------------------------------
 # Packaging & Staging Targets
 # ------------------------------------------------------------------------------
-## Stage compiled server binary and web dist into the overlay directory
-overlay: server client
-	@echo -e "$(CYAN)==> Staging binaries and web assets to overlay directory...$(RESET)"
-	@mkdir -p $(OVERLAY_DIR)/kvmapp/server/web
-	@cp $(SERVER_DIR)/NanoKVM-Server $(OVERLAY_DIR)/kvmapp/server/NanoKVM-Server
-	@chmod 755 $(OVERLAY_DIR)/kvmapp/server/NanoKVM-Server
-	@rm -rf $(OVERLAY_DIR)/kvmapp/server/web/*
-	@cp -r $(WEB_DIR)/dist/* $(OVERLAY_DIR)/kvmapp/server/web/
-	@chmod +x $(OVERLAY_DIR)/kvmapp/scripts/*.sh 2>/dev/null || true
-	@if [ "$(USE_CUSTOM_KERNEL)" = "1" ] || [ -f "$(CUSTOM_BOOT_BIN)" ] || [ -f "$(SUPPORT_DIR)/kernel/boot_signed.bin" ]; then \
-		echo -e "$(CYAN)==> Staging custom kernel modules into overlay directory...$(RESET)"; \
-		bash $(KERNEL_BUILD_SCRIPT) stage-modules $(OVERLAY_DIR); \
-	fi
-	@echo -e "$(GREEN)[✓] Overlay staged at: $(OVERLAY_DIR)$(RESET)"
+## Deprecated overlay target (now alias to deb)
+overlay: deb
 
-## Repackage ARM64 Debian packages (nanokvmpro & kvmcomm) with custom code & scripts
+## Build ARM64 Debian packages (nanokvmpro & kvmcomm) directly from package sources
 deb: server client
 	@if ! command -v dpkg-deb >/dev/null 2>&1; then \
 		echo -e "$(RED)Error: dpkg-deb command not found.$(RESET)"; \
@@ -194,45 +191,37 @@ deb: server client
 		echo -e "$(YELLOW)Or run: make setup-tooling$(RESET)"; \
 		exit 1; \
 	fi
-	@if [ ! -d "$(BASE_APP_DIR)" ] || [ ! -f "$(BASE_APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb" ]; then \
-		echo -e "$(CYAN)==> Base packages not found, fetching base firmware...$(RESET)"; \
-		$(MAKE) fetch-base; \
-	fi
 	@mkdir -p $(APP_DIR) $(DIST_DIR)
-	@echo -e "$(CYAN)==> Staging clean base Debian packages into $(APP_DIR)...$(RESET)"
-	@cp -f $(BASE_APP_DIR)/*.deb $(BASE_APP_DIR)/*.json $(APP_DIR)/
-	@echo -e "$(CYAN)==> Repackaging $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb...$(RESET)"
-	@REPACK_DIR=$$(mktemp -d -t nanokvm_deb_XXXXXX); \
-	trap 'rm -rf "$$REPACK_DIR"' EXIT; \
-	dpkg-deb -R $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb "$$REPACK_DIR" && \
-	cp $(SERVER_DIR)/NanoKVM-Server "$$REPACK_DIR/kvmapp/server/NanoKVM-Server" && \
-	chmod 755 "$$REPACK_DIR/kvmapp/server/NanoKVM-Server" && \
-	rm -rf "$$REPACK_DIR/kvmapp/server/web"/* && \
-	cp -r $(WEB_DIR)/dist/* "$$REPACK_DIR/kvmapp/server/web/" && \
-	if [ -d "$(OVERLAY_DIR)/kvmapp/scripts" ]; then \
-		cp -r $(OVERLAY_DIR)/kvmapp/scripts/* "$$REPACK_DIR/kvmapp/scripts/" && \
-		chmod -R 755 "$$REPACK_DIR/kvmapp/scripts/"; \
-	fi && \
-	dpkg-deb --root-owner-group -b "$$REPACK_DIR" $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb
+	@echo -e "$(CYAN)==> Building Debian package: nanokvmpro_$(VERSION)_arm64.deb...$(RESET)"
+	@cp -f $(SERVER_DIR)/NanoKVM-Server $(SUPPORT_DIR)/packages/nanokvmpro/kvmapp/server/NanoKVM-Server
+	@chmod 755 $(SUPPORT_DIR)/packages/nanokvmpro/kvmapp/server/NanoKVM-Server
+	@mkdir -p $(SUPPORT_DIR)/packages/nanokvmpro/kvmapp/server/web
+	@rm -rf $(SUPPORT_DIR)/packages/nanokvmpro/kvmapp/server/web/*
+	@cp -r $(WEB_DIR)/dist/* $(SUPPORT_DIR)/packages/nanokvmpro/kvmapp/server/web/
+	@chmod -R 755 $(SUPPORT_DIR)/packages/nanokvmpro/kvmapp/scripts/*.sh 2>/dev/null || true
+	@dpkg-deb --root-owner-group -b $(SUPPORT_DIR)/packages/nanokvmpro $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb
 	@cp -f $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb $(DIST_DIR)/
 	@echo -e "$(GREEN)[✓] Debian package ready: $(DIST_DIR)/nanokvmpro_$(VERSION)_arm64.deb$(RESET)"
-	@if [ -f "$(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb" ]; then \
-		echo -e "$(CYAN)==> Repackaging $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb with Wi-Fi auto-restore scripts...$(RESET)"; \
-		REPACK_COMM=$$(mktemp -d -t kvmcomm_deb_XXXXXX); \
-		trap 'rm -rf "$$REPACK_COMM"' EXIT; \
-		dpkg-deb -R $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb "$$REPACK_COMM" && \
-		if [ -f "$(OVERLAY_DIR)/kvmcomm/scripts/wifi.sh" ]; then \
-			cp $(OVERLAY_DIR)/kvmcomm/scripts/wifi.sh "$$REPACK_COMM/kvmcomm/scripts/wifi.sh" && \
-			chmod 755 "$$REPACK_COMM/kvmcomm/scripts/wifi.sh"; \
-		fi && \
-		if [ -f "$(OVERLAY_DIR)/kvmcomm/scripts/kvmcomm.sh" ]; then \
-			cp $(OVERLAY_DIR)/kvmcomm/scripts/kvmcomm.sh "$$REPACK_COMM/kvmcomm/scripts/kvmcomm.sh" && \
-			chmod 755 "$$REPACK_COMM/kvmcomm/scripts/kvmcomm.sh"; \
-		fi && \
-		dpkg-deb --root-owner-group -b "$$REPACK_COMM" $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb && \
-		cp -f $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb $(DIST_DIR)/; \
-		echo -e "$(GREEN)[✓] Debian package ready: $(DIST_DIR)/kvmcomm_$(VERSION)_arm64.deb$(RESET)"; \
+	@echo -e "$(CYAN)==> Building Debian package: kvmcomm_$(VERSION)_arm64.deb...$(RESET)"
+	@chmod -R 755 $(SUPPORT_DIR)/packages/kvmcomm/kvmcomm/scripts/*.sh 2>/dev/null || true
+	@chmod -R 755 $(SUPPORT_DIR)/packages/kvmcomm/kvmcomm/scripts/*.py 2>/dev/null || true
+	@dpkg-deb --root-owner-group -b $(SUPPORT_DIR)/packages/kvmcomm $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb
+	@cp -f $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb $(DIST_DIR)/
+	@echo -e "$(GREEN)[✓] Debian package ready: $(DIST_DIR)/kvmcomm_$(VERSION)_arm64.deb$(RESET)"
+	@if [ -d "$(BLOBS_PACKAGES_DIR)" ]; then \
+		cp -f $(BLOBS_PACKAGES_DIR)/*.json $(APP_DIR)/ 2>/dev/null || true; \
 	fi
+
+## Assemble Ubuntu Jammy rootfs from official base archive and repository blobs
+rootfs:
+	@echo -e "$(CYAN)==> Building root filesystem from base archive & repository blobs...$(RESET)"
+	@bash $(SUPPORT_DIR)/scripts/build_rootfs.sh $(BASE_ROOTFS)
+
+## Verify root filesystem integrity, OpenSSH, and systemd service boot states
+verify-rootfs:
+	@echo -e "$(CYAN)==> Running automated root filesystem verification test...$(RESET)"
+	$(PRIV_ESC) $(BUILD_PYTHON) $(CURDIR)/.agents/skills/nanokvm-rootfs-verification/scripts/verify_rootfs.py $(BASE_ROOTFS)
+
 
 ## Package update archive (.tar.gz) for Web UI update (Settings -> Update -> Manual Update)
 app-pkg: web-pkg
@@ -253,7 +242,7 @@ web-pkg: deb
 	@echo -e "$(GREEN)[✓] Web update package ready: $(DIST_DIR)/nanokvm_pro_$(VERSION).tar.gz$(RESET)"
 
 ## Build full in-system firmware update package (.tar.xz) with kernel, DTB, U-Boot & rootfs overlay
-firmware-pkg: build deb overlay kernel
+firmware-pkg: build deb kernel
 	@bash $(SUPPORT_DIR)/scripts/package_firmware.sh build
 
 ## Alias for firmware-pkg
@@ -360,10 +349,10 @@ kernel-clean:
 ## Repackage base AXP into custom NanoKVM-Pro AXP image (embeds custom kernel if available)
 image-axp: $(OUTPUT_AXP)
 
-$(OUTPUT_AXP): deb overlay
+$(OUTPUT_AXP): deb
 	@echo -e "$(CYAN)==> Packaging custom AXP image using build_image.py...$(RESET)"
-	@if [ ! -f "$(BASE_AXP)" ]; then \
-		echo -e "$(CYAN)==> Base AXP file not found, fetching base firmware...$(RESET)"; \
+	@if [ ! -d "$(BLOBS_DIR)" ] && [ ! -f "$(BASE_AXP)" ]; then \
+		echo -e "$(CYAN)==> Repository blobs or base AXP not found, fetching base firmware...$(RESET)"; \
 		$(MAKE) fetch-base; \
 	fi
 	@if ! command -v qemu-aarch64-static >/dev/null 2>&1 && [ ! -x /usr/bin/qemu-aarch64-static ]; then \
@@ -375,14 +364,14 @@ $(OUTPUT_AXP): deb overlay
 	@if [ "$(USE_CUSTOM_KERNEL)" = "1" ] && [ -f "$(CUSTOM_BOOT_BIN)" ]; then \
 		echo -e "$(GREEN)[+] Embedding custom signed kernel ($(CUSTOM_BOOT_BIN)) and DTB into image.$(RESET)"; \
 	else \
-		echo -e "$(YELLOW)[*] Using stock vendor kernel from base image container.$(RESET)"; \
+		echo -e "$(YELLOW)[*] Using stock vendor kernel from repository blobs.$(RESET)"; \
 	fi
 	@echo -e "$(YELLOW)[*] Elevated privileges required for image loop mounting and chroot.$(RESET)"
 	@echo -e "$(YELLOW)[*] Waiting for administrator authorization (Polkit/$(PRIV_ESC))...$(RESET)"
 	$(PRIV_ESC) $(BUILD_PYTHON) $(BUILD_IMAGE_DIR)/build_image.py \
-		$(BASE_AXP) \
+		$(if $(wildcard $(BLOBS_DIR)),--blobs $(BLOBS_DIR),$(BASE_AXP)) \
 		--app $(APP_DIR) \
-		--overlay $(OVERLAY_DIR) \
+		$(if $(OVERLAY_DIR),$(if $(wildcard $(OVERLAY_DIR)),--overlay $(OVERLAY_DIR))) \
 		--work-dir $(WORK_DIR) \
 		$(if $(filter 1,$(USE_CUSTOM_KERNEL)),$(if $(wildcard $(CUSTOM_BOOT_BIN)),--boot $(CUSTOM_BOOT_BIN) --dtb $(CUSTOM_DTB_BIN))) \
 		-o $(OUTPUT_AXP)
@@ -408,8 +397,8 @@ image: $(OUTPUT_IMG_XZ)
 # ------------------------------------------------------------------------------
 # Release Target (End-to-End Orchestrator)
 # ------------------------------------------------------------------------------
-## Complete end-to-end pipeline (server + client + deb + overlay + axp + img.xz)
-release: build deb overlay $(OUTPUT_AXP) $(OUTPUT_IMG_XZ)
+## Complete end-to-end pipeline (server + client + deb + axp + img.xz)
+release: build deb $(OUTPUT_AXP) $(OUTPUT_IMG_XZ)
 	@echo ""
 	@echo -e "$(GREEN)==================================================================$(RESET)"
 	@echo -e "$(GREEN)  NanoKVM Pro End-to-End Release Complete!$(RESET)"
@@ -542,8 +531,7 @@ clean:
 	@echo -e "$(YELLOW)==> Cleaning build artifacts...$(RESET)"
 	@rm -f $(SERVER_DIR)/NanoKVM-Server
 	@rm -rf $(WEB_DIR)/dist
-	@rm -rf $(OVERLAY_DIR)/kvmapp/server/web $(OVERLAY_DIR)/kvmapp/server/NanoKVM-Server
-	@rm -rf $(OVERLAY_DIR)/kvmcomm/ko_* $(OVERLAY_DIR)/lib
+	@rm -rf $(SUPPORT_DIR)/packages/nanokvmpro/kvmapp/server/web $(SUPPORT_DIR)/packages/nanokvmpro/kvmapp/server/NanoKVM-Server
 	@echo -e "$(GREEN)[✓] Clean complete.$(RESET)"
 
 ## Full clean of all generated build outputs (preserves support/base_firmware)

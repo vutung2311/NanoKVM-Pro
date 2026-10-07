@@ -1,0 +1,259 @@
+<Config>
+  <Project alias="AX620E" name="AX630C" version="V3.0.0_20250319114413_20260415172612">
+    <FDLLevel>2</FDLLevel>
+    
+    <Partitions strategy="1" unit="2">
+      
+      <Partition gap="0" id="spl" size="768" />
+      <Partition gap="0" id="ddrinit" size="512" />
+      <Partition gap="0" id="atf" size="256" />
+      <Partition gap="0" id="atf_b" size="256" />
+      <Partition gap="0" id="uboot" size="1536" />
+      <Partition gap="0" id="uboot_b" size="1536" />
+      <Partition gap="0" id="env" size="1024" />
+      <Partition gap="0" id="logo" size="6144" />
+      <Partition gap="0" id="logo_b" size="6144" />
+      <Partition gap="0" id="optee" size="1024" />
+      <Partition gap="0" id="optee_b" size="1024" />
+      <Partition gap="0" id="dtb" size="1024" />
+      <Partition gap="0" id="dtb_b" size="1024" />
+      <Partition gap="0" id="kernel" size="65536" />
+      <Partition gap="0" id="kernel_b" size="65536" />
+      <Partition gap="0" id="boot" size="131072" />
+      <Partition gap="0" id="rootfs" size="0xffffffff" />
+    </Partitions>
+    <ImgList>
+      <Img flag="2" name="INIT" select="1">
+        <ID>INIT</ID>
+        <Type>INIT</Type>
+        <Block>
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File />
+        <Auth algo="0" />
+        <Description>Download init image file</Description>
+      </Img>
+      <Img flag="3" name="EIP" select="1">
+        <ID>EIP</ID>
+        <Type>EIP</Type>
+        <Block>
+          <Base>0x3000000</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>eip_ax620e.bin</File>
+        <Auth algo="0" />
+        <Description>Download eip image file</Description>
+      </Img>
+      <Img flag="3" name="FDL1" select="1">
+        <ID>FDL1</ID>
+        <Type>FDL1</Type>
+        <Block>
+          <Base>0x3000000</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>fdl_AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download fdl1 image file</Description>
+      </Img>
+      <Img flag="3" name="FDL2" select="1">
+        <ID>FDL2</ID>
+        <Type>FDL2</Type>
+        <Block>
+          <Base>0x5C000000</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>fdl2_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download fdl2 image file</Description>
+      </Img>
+      <Img flag="0" name="ERASEENV" select="0">
+        <ID>ERASEENV</ID>
+        <Type>ERASEFLASH</Type>
+        <Block id="env">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File />
+        <Auth algo="0" />
+        <Description>Download eraseenv image file</Description>
+      </Img>
+      <Img flag="1" name="DDRINIT" select="1">
+        <ID>DDRINIT</ID>
+        <Type>CODE</Type>
+        <Block id="ddrinit">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>ddrinit_AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download ddrinit image file</Description>
+      </Img>
+      <Img flag="1" name="ATF" select="1">
+        <ID>ATF</ID>
+        <Type>CODE</Type>
+        <Block id="atf">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>atf_bl31_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download atf image file</Description>
+      </Img>
+      <Img flag="1" name="ATF_B" select="1">
+        <ID>ATF_B</ID>
+        <Type>CODE</Type>
+        <Block id="atf_b">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>atf_b_bl31_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download atf_b image file</Description>
+      </Img>
+      <Img flag="1" name="UBOOT" select="1">
+        <ID>UBOOT</ID>
+        <Type>CODE</Type>
+        <Block id="uboot">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>u-boot_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download uboot image file</Description>
+      </Img>
+      <Img flag="1" name="UBOOT_B" select="1">
+        <ID>UBOOT_B</ID>
+        <Type>CODE</Type>
+        <Block id="uboot_b">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>u-boot_b_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download uboot_b image file</Description>
+      </Img>
+      <Img flag="1" name="LOGO" select="1">
+        <ID>LOGO</ID>
+        <Type>CODE</Type>
+        <Block id="logo">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>axera_logo.bmp</File>
+        <Auth algo="0" />
+        <Description>Download logo image file</Description>
+      </Img>
+      <Img flag="1" name="LOGO_B" select="1">
+        <ID>LOGO_B</ID>
+        <Type>CODE</Type>
+        <Block id="logo_b">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>axera_logo.bmp.1</File>
+        <Auth algo="0" />
+        <Description>Download logo_b image file</Description>
+      </Img>
+      <Img flag="1" name="OPTEE" select="1">
+        <ID>OPTEE</ID>
+        <Type>CODE</Type>
+        <Block id="optee">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>optee_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download optee image file</Description>
+      </Img>
+      <Img flag="1" name="OPTEE_B" select="1">
+        <ID>OPTEE_B</ID>
+        <Type>CODE</Type>
+        <Block id="optee_b">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>optee_signed.bin.1</File>
+        <Auth algo="0" />
+        <Description>Download optee_b image file</Description>
+      </Img>
+      <Img flag="1" name="DTB" select="1">
+        <ID>DTB</ID>
+        <Type>CODE</Type>
+        <Block id="dtb">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.dtb</File>
+        <Auth algo="0" />
+        <Description>Download dtb image file</Description>
+      </Img>
+      <Img flag="1" name="DTB_B" select="1">
+        <ID>DTB_B</ID>
+        <Type>CODE</Type>
+        <Block id="dtb_b">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.dtb.1</File>
+        <Auth algo="0" />
+        <Description>Download dtb_b image file</Description>
+      </Img>
+      <Img flag="1" name="KERNEL" select="1">
+        <ID>KERNEL</ID>
+        <Type>CODE</Type>
+        <Block id="kernel">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>boot_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download kernel image file</Description>
+      </Img>
+      <Img flag="1" name="KERNEL_B" select="1">
+        <ID>KERNEL_B</ID>
+        <Type>CODE</Type>
+        <Block id="kernel_b">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>boot_signed.bin.1</File>
+        <Auth algo="0" />
+        <Description>Download kernel_b image file</Description>
+      </Img>
+      <Img flag="1" name="BOOT" select="1">
+        <ID>BOOT</ID>
+        <Type>CODE</Type>
+        <Block id="boot">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>bootfs.fat32</File>
+        <Auth algo="0" />
+        <Description>Download boot image file</Description>
+      </Img>
+      <Img flag="1" name="ROOTFS" select="1">
+        <ID>ROOTFS</ID>
+        <Type>CODE</Type>
+        <Block id="rootfs">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>ubuntu_rootfs_sparse.ext4</File>
+        <Auth algo="0" />
+        <Description>Download rootfs image file</Description>
+      </Img>
+      <Img flag="1" name="SPL" select="1">
+        <ID>SPL</ID>
+        <Type>CODE</Type>
+        <Block id="spl">
+          <Base>0x0</Base>
+          <Size>0x0</Size>
+        </Block>
+        <File>spl_AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.bin</File>
+        <Auth algo="0" />
+        <Description>Download spl image file</Description>
+      </Img>
+    </ImgList>
+  </Project>
+</Config>

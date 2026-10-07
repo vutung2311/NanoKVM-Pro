@@ -1,0 +1,6 @@
+Package: kvmcomm
+Version: 1.2.15
+Architecture: arm64
+Maintainer: Sipeed <support@sipeed.com>
+Description: kvmcomm
+Depends: arp-scan

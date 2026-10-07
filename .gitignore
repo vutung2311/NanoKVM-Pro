@@ -34,11 +34,11 @@ support/base_firmware/nanokvm_pro_*
 *.fat32
 *.img
 *.img.xz
+!.agents/
+!support/blobs/**
 mount_point/
-support/scripts/build_image/overlay/kvmapp/server/NanoKVM-Server
-support/scripts/build_image/overlay/kvmapp/server/web/
-support/scripts/build_image/overlay/kvmcomm/ko_*/
-support/scripts/build_image/overlay/lib/
+support/packages/nanokvmpro/kvmapp/server/NanoKVM-Server
+support/packages/nanokvmpro/kvmapp/server/web/
 images/
 
 # IDE/Editor

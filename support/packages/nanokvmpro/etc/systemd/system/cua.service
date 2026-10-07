@@ -1,0 +1,27 @@
+[Unit]
+Description=cua service
+ConditionPathExists=/kvmapp/cua/cua_webapp.py
+After=network.target
+
+[Service]
+Type=simple
+ExecReload=/bin/kill -HUP $MAINPID
+User=root
+Group=root
+LimitNOFILE=100000
+
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+
+WorkingDirectory=/kvmapp/cua
+ExecStart=/kvmapp/cua/cua_webapp.py
+
+PermissionsStartOnly=true
+ExecStartPre=/bin/chown -R root:root /kvmapp/cua
+ExecStartPre=/bin/chmod 755 /kvmapp/cua/cua_webapp.py
+
+[Install]
+WantedBy=multi-user.target

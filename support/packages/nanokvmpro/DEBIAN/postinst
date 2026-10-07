@@ -1,0 +1,68 @@
+#!/bin/bash
+set -e
+
+mkdir -p /etc/kvm
+mkdir -p /var/log/nanokvm
+
+# Generate default self-signed certs if missing so server starts immediately
+if [ ! -f /etc/kvm/server.crt ] || [ ! -f /etc/kvm/server.key ]; then
+    openssl req -x509 -newkey rsa:2048 \
+        -keyout /etc/kvm/server.key \
+        -out /etc/kvm/server.crt \
+        -days 3650 -nodes -subj "/CN=localhost" >/dev/null 2>&1
+    chmod 600 /etc/kvm/server.key
+    chmod 644 /etc/kvm/server.crt
+fi
+
+# Ensure OpenSSH tmpfiles and systemd drop-in override are staged
+mkdir -p /etc/tmpfiles.d
+if [ ! -f /etc/tmpfiles.d/sshd.conf ]; then
+    echo 'd /run/sshd 0755 root root -' > /etc/tmpfiles.d/sshd.conf
+fi
+
+mkdir -p /etc/systemd/system/ssh.service.d
+if [ ! -f /etc/systemd/system/ssh.service.d/override.conf ]; then
+    cat << 'EOF' > /etc/systemd/system/ssh.service.d/override.conf
+[Unit]
+Description=OpenBSD Secure Shell server
+
+[Service]
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+ExecStartPre=/bin/mkdir -p -m 0755 /run/sshd
+EOF
+fi
+
+# Ensure no stale static fallback IP in rc.local
+if [ -f /etc/rc.local ]; then
+    sed -i '/192\.168\.100\.200/d' /etc/rc.local
+fi
+
+# Ensure dynamic linker configuration
+mkdir -p /etc/ld.so.conf.d
+if [ ! -f /etc/ld.so.conf.d/00-axera.conf ]; then
+    cat << 'EOF' > /etc/ld.so.conf.d/00-axera.conf
+/opt/lib
+/kvmapp/server/dl_lib
+EOF
+fi
+
+if [ -d /kvmapp/scripts ]; then
+    chmod 755 /kvmapp/scripts/*.sh
+fi
+if [ -f /kvmapp/server/NanoKVM-Server ]; then
+    chmod 755 /kvmapp/server/NanoKVM-Server
+fi
+
+ldconfig
+
+mkdir -p /etc/systemd/system/multi-user.target.wants
+[ -f /etc/systemd/system/nanokvm.service ] && ln -sf /etc/systemd/system/nanokvm.service /etc/systemd/system/multi-user.target.wants/nanokvm.service
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    if [ "$(stat -c %d:%i /)" == "$(stat -c %d:%i /proc/1/root/.)" ]; then
+        systemctl restart nanokvm.service
+    fi
+fi
+

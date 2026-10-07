@@ -1,0 +1,5 @@
+#!/bin/bash
+set -e
+if [ "$1" = "purge" ]; then
+    rm -rf /var/log/kvmcomm >/dev/null 2>&1 || exit 0
+fi
