@@ -34,9 +34,13 @@
 
 * `server/`: Go backend (`main.go`, Gin HTTP/WS server, HID, ATX power, streaming).
 * `web/`: React + Vite + TypeScript frontend.
+* `support/packages/`: Upstream and custom Debian package source trees (`nanokvmpro`, `kvmcomm`) built via `dpkg-deb`.
+* `support/blobs/`: Extracted silicon binaries, bootloader stages, bootfs assets, and Axera hardware drivers.
 * `support/base_firmware/`: Pristine official stock firmware releases (`20260529_NanoKVMPro_1_0_15.axp`, stock `.deb` packages).
 * `support/scripts/toolchain_setup.sh`: Downloads ARM64 GNU GCC toolchain (`aarch64-none-linux-gnu`) and libraries.
 * `support/scripts/build_image/`: Scripts to expand rootfs, overlay custom binaries/configs, and pack final `.axp` images.
+* `.agents/`: Repository skills and architectural rules for agentic workflows and automated smoke testing.
+
 
 ---
 
@@ -50,7 +54,7 @@
   * Hardened [`hid.go`](file:///home/tung/Git/nanokvm-pro/server/service/hid/hid.go) with automatic descriptor recovery on fatal driver errors/UDC rebinds.
   * Added unit tests in [`mouse_test.go`](file:///home/tung/Git/nanokvm-pro/server/service/hid/mouse_test.go).
 - [x] **Step 4: Fix Phantom Joystick (`js0`) & Restore Absolute Mouse:**
-  * Updated [`usbdev.sh`](file:///home/tung/Git/nanokvm-pro/support/scripts/build_image/overlay/kvmapp/scripts/usbdev.sh) to configure `hid.GS2` (absolute mouse/touchpad) with `protocol 0` and `subclass 0` (non-boot generic pointer), resolving Linux host phantom joystick (`js0`) detection without disabling the interface.
+  * Updated [`usbdev.sh`](file:///home/tung/Git/nanokvm-pro/support/packages/nanokvmpro/kvmapp/scripts/usbdev.sh) to configure `hid.GS2` (absolute mouse/touchpad) with `protocol 0` and `subclass 0` (non-boot generic pointer), resolving Linux host phantom joystick (`js0`) detection without disabling the interface.
   * Ensured `/dev/hidg2` is created and enabled by default (with opt-out via `/boot/usb.no_touchpad`) so that the default Absolute Mouse mode in the WebUI operates out of the box.
   * Added requestAnimationFrame throttling to absolute mouse in [`absolute.tsx`](file:///home/tung/Git/nanokvm-pro/web/src/pages/desktop/mouse/absolute.tsx) and preserved scroll wheel deltas across coalesced events in [`mouse.go`](file:///home/tung/Git/nanokvm-pro/server/service/hid/mouse.go).
 - [x] **Step 5: On-Demand Services & Optimization:**
@@ -61,9 +65,9 @@
     * `NanoKVMPro_Custom_1_2_15.axp` (1.5 GB) - Flashable via Sipeed AXDL tool.
     * `NanoKVMPro_Custom_1_2_15.img.xz` (720 MB) - Raw disk image flashable to eMMC or SD card.
 - [x] **Step 7: Fix Wi-Fi Auto-Restore After Power Loss (Issue #144):**
-  * Created overlay scripts in [`support/scripts/build_image/overlay/kvmcomm/scripts/`](file:///home/tung/Git/nanokvm-pro/support/scripts/build_image/overlay/kvmcomm/scripts/):
-    * [`wifi.sh`](file:///home/tung/Git/nanokvm-pro/support/scripts/build_image/overlay/kvmcomm/scripts/wifi.sh): Preserves `/etc/kvm/wifi.conf` during normal disconnect/AP transitions, enhances `try_connect` and `check_previous_wifi` with persistent fallback (`/etc/kvm/wifi_save` and `wpa_supplicant`), and fixes `if_previous_wifi` / `try_previous_wifi` so volatile `/dev/shm` loss doesn't trigger unexpected QR-code AP mode on boot.
-    * [`kvmcomm.sh`](file:///home/tung/Git/nanokvm-pro/support/scripts/build_image/overlay/kvmcomm/scripts/kvmcomm.sh): Automatically triggers background Wi-Fi auto-connect on boot if a network configuration is present.
+  * Created package scripts in [`support/packages/kvmcomm/kvmcomm/scripts/`](file:///home/tung/Git/nanokvm-pro/support/packages/kvmcomm/kvmcomm/scripts/):
+    * [`wifi.sh`](file:///home/tung/Git/nanokvm-pro/support/packages/kvmcomm/kvmcomm/scripts/wifi.sh): Preserves `/etc/kvm/wifi.conf` during normal disconnect/AP transitions, enhances `try_connect` and `check_previous_wifi` with persistent fallback (`/etc/kvm/wifi_save` and `wpa_supplicant`), and fixes `if_previous_wifi` / `try_previous_wifi` so volatile `/dev/shm` loss doesn't trigger unexpected QR-code AP mode on boot.
+    * [`kvmcomm.sh`](file:///home/tung/Git/nanokvm-pro/support/packages/kvmcomm/kvmcomm/scripts/kvmcomm.sh): Automatically triggers background Wi-Fi auto-connect on boot if a network configuration is present.
   * Hardened [`wifi.go`](file:///home/tung/Git/nanokvm-pro/server/service/network/wifi.go) `isAPMode()` to ensure active STA connections are never misclassified as AP mode.
 - [x] **Step 8: Pristine Base Firmware Archiving:**
   * Stored untouched base firmware releases inside [`support/base_firmware/`](file:///home/tung/Git/nanokvm-pro/support/base_firmware/):
@@ -134,6 +138,10 @@
   * **End-to-End Build Automation:** Runs full recompile of server, web frontend (Vite), Debian packages (`nanokvmpro` & `kvmcomm`), and Linux kernel & modules, then stages signed boot binaries (`boot_signed.bin`, DTB, `u-boot_signed.bin`), rootfs overlay, and version metadata.
   * **Native Updater Compatibility:** Generates deterministic `b2sum.txt` manifest and parallel XZ compressed `build_dist/axera_firmware_v<VERSION>.tar.xz`, 100% compatible with NanoKVM WebUI manual update and `/kvmcomm/scripts/firmware_update.sh`.
   * **Safe Live Flashing:** `make firmware-flash IP=<ip>` runs pre-flight diagnostics, verifies Slot A failsafe integrity, uploads the package, triggers native partition flashing (`axkernel.sh`, `axdtb.sh`, `axuboot.sh`), and reboots.
-
-
-
+- [x] **Step 16: Rootfs Lifecycle Verification & Boot Service Startup Fixes:**
+  * **OpenSSH On-Demand Startup Fix:** Resolved `sshd -t` exit code 255 (`Missing privilege separation directory: /run/sshd`) caused by `/run` being mounted as an in-RAM `tmpfs` upon system boot. Added `/etc/tmpfiles.d/sshd.conf` (`d /run/sshd 0755 root root -`) to `support/blobs/rootfs` and `support/packages/kvmcomm/kvmcomm/overlay/` and systemd drop-in override `/etc/systemd/system/ssh.service.d/override.conf` (`RuntimeDirectory=sshd` and `ExecStartPre=/bin/mkdir -p -m 0755 /run/sshd`), ensuring on-demand SSH activation succeeds without error while preserving intentional out-of-the-box disabled state in `build_image.py`.
+  * **NanoKVM HTTP/HTTPS Service Auto-Enablement:** Fixed empty `support/packages/nanokvmpro/DEBIAN/postinst` by executing `systemctl daemon-reload` and `systemctl enable nanokvm.service`, ensuring `nanokvm.service` is actively linked into `/etc/systemd/system/multi-user.target.wants/`.
+  * **Pre-bundled Default SSL Certificates:** Bundled default 10-year self-signed certificates in `/etc/kvm/server.crt` and `server.key` (with permissions `0600`/`0644`) to eliminate 10-15s RSA key generation CPU delays and startup races during initial boot.
+  * **Axera Shared Library Resolution:** Added `/etc/ld.so.conf.d/00-axera.conf` registering `/opt/lib` and `/kvmapp/server/dl_lib` for system-wide dynamic linking.
+  * **Automated Rootfs Verification Runner (`make verify-rootfs`):** Created [`.agents/skills/nanokvm-rootfs-verification/scripts/verify_rootfs.py`](file:///home/tung/Git/nanokvm-pro/.agents/skills/nanokvm-rootfs-verification/scripts/verify_rootfs.py) using loop+overlayfs to smoke-test OpenSSH, systemd boot links, and daemon execution inside QEMU ARM64 prior to flashing hardware.
+  * **Skill Codification:** Codified all repository operational knowledge under `.agents/skills/` (`nanokvm-rootfs-verification`, `nanokvm-firmware-builder`, `nanokvm-kernel-workflow`, `nanokvm-service-integration`) and `.agents/rules/nanokvm-rules.md`.

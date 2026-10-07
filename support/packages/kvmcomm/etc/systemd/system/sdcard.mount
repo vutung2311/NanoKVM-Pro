@@ -1,0 +1,14 @@
+[Unit]
+Description=Auto mount SD card
+Wants=dev-mmcblk1p1.device
+After=dev-mmcblk1p1.device
+
+[Mount]
+What=/dev/mmcblk1p1
+Where=/sdcard
+Type=auto
+Options=defaults,noatime
+TimeoutSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -105,12 +105,70 @@ def assert_no_mounts_under(path):
     if busy:
         raise RuntimeError(f"refusing to delete {root}: still mounted: {', '.join(busy)}")
 
-def replace_axp(axp_file, replacements, output=None, work_dir=None):
+def stage_bootloader_from_blobs(blobs_dir, temp_dir, replacements=None, overlay_dir=None):
+    bootloader_dir = os.path.join(blobs_dir, "bootloader")
+    bootfs_dir = os.path.join(blobs_dir, "bootfs")
+
+    if not os.path.isdir(bootloader_dir):
+        raise FileNotFoundError(f"Bootloader blobs directory not found: {bootloader_dir}")
+
+    print(f"[+] Staging bootloader blobs from {bootloader_dir}...")
+    for item in os.listdir(bootloader_dir):
+        src = os.path.join(bootloader_dir, item)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(temp_dir, item))
+
+    if replacements:
+        for fname, new_path in replacements.items():
+            if new_path and os.path.exists(new_path):
+                print(f"[+] Replacing {fname} -> {new_path}")
+                shutil.copy2(new_path, os.path.join(temp_dir, fname))
+
+    # Generate bootfs.fat32 (128 MB VFAT image)
+    bootfs_path = os.path.join(temp_dir, "bootfs.fat32")
+    print("[+] Creating bootfs.fat32 partition image (128MB FAT32)...")
+    subprocess.run(["dd", "if=/dev/zero", f"of={bootfs_path}", "bs=1M", "count=128", "status=none"], check=True)
+    subprocess.run(["mkfs.vfat", "-F", "32", "-n", "BOOT", bootfs_path], check=True)
+
+    if os.path.isdir(bootfs_dir):
+        for item in os.listdir(bootfs_dir):
+            item_path = os.path.join(bootfs_dir, item)
+            subprocess.run(["mcopy", "-o", "-i", bootfs_path, item_path, "::/"], check=True)
+
+    if overlay_dir and os.path.isdir(os.path.join(overlay_dir, "boot")):
+        for item in os.listdir(os.path.join(overlay_dir, "boot")):
+            item_path = os.path.join(overlay_dir, "boot", item)
+            subprocess.run(["mcopy", "-o", "-i", bootfs_path, item_path, "::/"], check=True)
+
+def locate_base_rootfs(rootfs_path=None, blobs_dir=None):
+    candidates = []
+    if rootfs_path:
+        candidates.append(rootfs_path)
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+    candidates.extend([
+        os.path.join(repo_root, "build_dist/ubuntu_rootfs.ext4"),
+        os.path.join(repo_root, "build_dist/ubuntu_rootfs_sparse.ext4"),
+        "/var/tmp/nanokvm_inspect/ubuntu_rootfs.ext4",
+        os.path.join(repo_root, "support/base_firmware/ubuntu_rootfs.ext4"),
+    ])
+    if blobs_dir:
+        candidates.extend([
+            os.path.join(blobs_dir, "rootfs/ubuntu_rootfs.ext4"),
+            os.path.join(blobs_dir, "rootfs/ubuntu_rootfs_sparse.ext4"),
+        ])
+
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None, output=None, work_dir=None):
     global _active_mount_point
     if output is None:
-        output = os.path.splitext(axp_file)[0] + "_modified.axp"
+        output = "NanoKVMPro_Custom.axp"
 
-    temp_dir = os.path.abspath(work_dir) if work_dir else os.path.join(os.path.dirname(axp_file), "axp_temp")
+    temp_dir = os.path.abspath(work_dir) if work_dir else "/var/tmp/nanokvm_build_axp"
     mount_point = os.path.join(temp_dir, "mount_point")
     _active_mount_point = mount_point
 
@@ -127,25 +185,44 @@ def replace_axp(axp_file, replacements, output=None, work_dir=None):
     os.makedirs(temp_dir, exist_ok=True)
     os.makedirs(mount_point, exist_ok=True)
 
-    print(f"[+] Extracting {axp_file}")
-    with zipfile.ZipFile(axp_file, 'r') as zip_ref:
-        file_list = zip_ref.namelist()
-        with tqdm(total=len(file_list), desc="Extracting", unit="files") as pbar:
-            for file in file_list:
-                zip_ref.extract(file, temp_dir)
-                pbar.update(1)
+    if blobs_dir and os.path.isdir(blobs_dir):
+        print(f"[+] Building AXP directly from repository blobs: {blobs_dir}")
+        stage_bootloader_from_blobs(blobs_dir, temp_dir, replacements=replacements, overlay_dir=getattr(args, 'overlay', None))
+        base_rootfs = locate_base_rootfs(rootfs_path, blobs_dir)
+        if not base_rootfs:
+            raise FileNotFoundError(
+                "Base rootfs not found! Expected 'build_dist/ubuntu_rootfs.ext4'. "
+                "Specify --rootfs or provide the base image."
+            )
+        target_raw = os.path.join(temp_dir, "ubuntu_rootfs.ext4")
+        if base_rootfs.endswith("_sparse.ext4"):
+            print(f"[+] Converting sparse rootfs {base_rootfs} -> raw {target_raw}...")
+            sparse_to_raw(base_rootfs, target_raw)
+        else:
+            print(f"[+] Staging raw rootfs {base_rootfs} -> {target_raw}...")
+            subprocess.run(["cp", "--sparse=always", base_rootfs, target_raw], check=True)
+    elif axp_file and os.path.exists(axp_file):
+        print(f"[+] Extracting {axp_file}")
+        with zipfile.ZipFile(axp_file, 'r') as zip_ref:
+            file_list = zip_ref.namelist()
+            with tqdm(total=len(file_list), desc="Extracting", unit="files") as pbar:
+                for file in file_list:
+                    zip_ref.extract(file, temp_dir)
+                    pbar.update(1)
 
-    for fname, new_path in replacements.items():
-        target_path = os.path.join(temp_dir, fname)
-        if not os.path.exists(target_path):
-            print(f"[!] Warning: {fname} not found in axp, skipping")
-            continue
-        print(f"[+] Replacing {fname} -> {new_path}")
-        shutil.copy2(new_path, target_path)
+        for fname, new_path in (replacements or {}).items():
+            target_path = os.path.join(temp_dir, fname)
+            if not os.path.exists(target_path):
+                print(f"[!] Warning: {fname} not found in axp, skipping")
+                continue
+            print(f"[+] Replacing {fname} -> {new_path}")
+            shutil.copy2(new_path, target_path)
 
-    sparse_to_raw(os.path.join(temp_dir, "ubuntu_rootfs_sparse.ext4"),
-                  os.path.join(temp_dir, "ubuntu_rootfs.ext4"))
-    os.remove(os.path.join(temp_dir, "ubuntu_rootfs_sparse.ext4"))
+        sparse_to_raw(os.path.join(temp_dir, "ubuntu_rootfs_sparse.ext4"),
+                      os.path.join(temp_dir, "ubuntu_rootfs.ext4"))
+        os.remove(os.path.join(temp_dir, "ubuntu_rootfs_sparse.ext4"))
+    else:
+        raise ValueError("Neither valid --blobs directory nor input AXP archive was provided.")
 
     raw_img = os.path.join(temp_dir, "ubuntu_rootfs.ext4")
     print("[+] Expanding image size by 512MB...")
@@ -171,6 +248,11 @@ def replace_axp(axp_file, replacements, output=None, work_dir=None):
         if args.remove_file:
             remove_files(mount_point=mount_point, remove_file_list=args.remove_file)
 
+        blobs_rootfs = os.path.join(blobs_dir, "rootfs") if blobs_dir else None
+        if blobs_rootfs and os.path.isdir(blobs_rootfs):
+            print(f"[+] Applying repository rootfs blobs from {blobs_rootfs}...")
+            subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks", f"{blobs_rootfs}/", f"{mount_point}/"], check=True)
+
         if args.app:
             subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks", f"{args.app}/", f"{mount_point}/root"], check=True)
             run_chroot_commands(mount_point=mount_point, commands=["dpkg -i /root/*.deb"])
@@ -195,21 +277,40 @@ def replace_axp(axp_file, replacements, output=None, work_dir=None):
         setup_chroot_dns(mount_point)
 
         run_chroot_commands(mount_point=mount_point, commands=[
-            "apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root update && "
+            "(apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root update && "
             "apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root install --reinstall -y ca-certificates && "
-            "update-ca-certificates || true"
+            "update-ca-certificates) || echo '[!] Warning: CA certificates update skipped (offline build)'",
+            "mkdir -p /etc/systemd/system/multi-user.target.wants",
+            "ln -sf /etc/systemd/system/nanokvm.service /etc/systemd/system/multi-user.target.wants/nanokvm.service",
+            "ln -sf /etc/systemd/system/kvmcomm.service /etc/systemd/system/multi-user.target.wants/kvmcomm.service",
+            "rm -f /etc/systemd/system/multi-user.target.wants/ssh.service "
+            "/etc/systemd/system/multi-user.target.wants/usb-gadget.service "
+            "/etc/systemd/system/sockets.target.wants/ssh.socket",
+            "mkdir -p /etc/tmpfiles.d && echo 'd /run/sshd 0755 root root -' > /etc/tmpfiles.d/sshd.conf",
+            "mkdir -p /etc/systemd/system/ssh.service.d",
+            '''printf '[Unit]\\nDescription=OpenBSD Secure Shell server\\n\\n[Service]\\nRuntimeDirectory=sshd\\nRuntimeDirectoryMode=0755\\nExecStartPre=/bin/mkdir -p -m 0755 /run/sshd\\n' > /etc/systemd/system/ssh.service.d/override.conf''',
+            "mkdir -p /etc/kvm",
+            '''if [ ! -f /etc/kvm/server.crt ] || [ ! -f /etc/kvm/server.key ]; then
+                openssl req -x509 -newkey rsa:2048 -keyout /etc/kvm/server.key -out /etc/kvm/server.crt -days 3650 -nodes -subj "/CN=localhost"
+                chmod 600 /etc/kvm/server.key
+                chmod 644 /etc/kvm/server.crt
+            fi''',
+            '''if [ -f /etc/rc.local ]; then
+                sed -i '/192\\.168\\.100\\.200/d' /etc/rc.local
+            fi''',
+            "ldconfig"
         ])
-        run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/ssh.service"])
-        run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/usb-gadget.service"])
-        run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/sockets.target.wants/ssh.socket"])
-        run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/cua.service"])
-
-        # Disable redundant background timers & unused services
+        # Disable redundant background timers & services (including nginx so NanoKVM port 80/443 is free)
         run_chroot_commands(mount_point=mount_point, commands=[
             "rm -f /etc/systemd/system/timers.target.wants/apt-daily.timer "
             "/etc/systemd/system/timers.target.wants/apt-daily-upgrade.timer "
             "/etc/systemd/system/timers.target.wants/motd-news.timer "
-            "/etc/systemd/system/bluetooth.target.wants/bluetooth.service || true"
+            "/etc/systemd/system/bluetooth.target.wants/bluetooth.service "
+            "/etc/systemd/system/multi-user.target.wants/isc-dhcp-server.service "
+            "/etc/systemd/system/multi-user.target.wants/isc-dhcp-server6.service "
+            "/etc/systemd/system/multi-user.target.wants/nginx.service "
+            "/etc/systemd/system/multi-user.target.wants/kvmd-nginx.service "
+            "/etc/systemd/system/multi-user.target.wants/cua.service"
         ])
 
         # Configure journald to volatile RAM storage (16MB max) to eliminate eMMC flash churn
@@ -297,6 +398,8 @@ def replace_axp(axp_file, replacements, output=None, work_dir=None):
             pass
 
     print(f"[+] Done! New axp file: {output}")
+
+replace_axp = build_axp
 
 def sparse_to_raw(sparse_img, raw_img):
     subprocess.run(["simg2img", sparse_img, raw_img], check=True)
@@ -544,9 +647,11 @@ rm -f "$remove_file_list"
     subprocess.run(SUDO + ["chroot", mount_point, "bash", "-c", removal_script], check=True)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Replace dtb/boot/u-boot files in AXP file")
-    parser.add_argument("axp", help="Input axp file path")
+    parser = argparse.ArgumentParser(description="Build or customize NanoKVM-Pro AXP image")
+    parser.add_argument("axp", nargs="?", default=None, help="Input axp file path (optional if --blobs is provided)")
     parser.add_argument("-o", "--output", help="Output axp file path")
+    parser.add_argument("--blobs", help="Directory containing repository binary blobs (support/blobs)")
+    parser.add_argument("--rootfs", help="Path to base rootfs image (.ext4 or sparse .ext4)")
     parser.add_argument("--dtb", help="New dtb file path")
     parser.add_argument("--boot", help="New boot_signed.bin file path")
     parser.add_argument("--uboot", help="New u-boot_signed.bin file path")
@@ -557,6 +662,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     ensure_root_privileges()
     enter_private_namespace()
+
+    # Auto-detect blobs directory if not explicitly provided
+    if not args.axp and not args.blobs:
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+        default_blobs = os.path.join(repo_root, "support/blobs")
+        if os.path.isdir(default_blobs):
+            args.blobs = default_blobs
 
     replacements = {}
     if args.dtb:
@@ -569,4 +681,5 @@ if __name__ == "__main__":
         replacements["u-boot_signed.bin"] = args.uboot
         replacements["u-boot_b_signed.bin"] = args.uboot
 
-    replace_axp(args.axp, replacements, args.output, work_dir=args.work_dir)
+    build_axp(axp_file=args.axp, blobs_dir=args.blobs, rootfs_path=args.rootfs,
+              replacements=replacements, output=args.output, work_dir=args.work_dir)

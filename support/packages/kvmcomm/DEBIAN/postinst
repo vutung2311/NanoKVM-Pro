@@ -1,0 +1,111 @@
+#!/bin/bash
+set -e
+ldconfig
+
+readonly USERAPP_DEMO_PATH=/kvmcomm/ui/userapp_demo.tar
+readonly USERAPP_TMP_PATH=/tmp/userapp
+readonly USERAPP_TARGET_DIR=/userapp
+readonly OVERLAY_TARGET_DIR=/kvmcomm/overlay
+readonly WIFI_CONF="/etc/kvm/wifi.conf"
+
+mkdir -p "$USERAPP_TMP_PATH"
+tar -xf "$USERAPP_DEMO_PATH" -C "$USERAPP_TMP_PATH"
+
+if [ ! -d "$USERAPP_TARGET_DIR" ]; then
+    echo "$USERAPP_TARGET_DIR not found, extracting from $USERAPP_DEMO_PATH..."
+    mkdir -p "$USERAPP_TARGET_DIR"
+    mv "$USERAPP_TMP_PATH"/* "$USERAPP_TARGET_DIR"/
+
+    for dir in "$USERAPP_TARGET_DIR"/*/; do
+        if [ -d "$dir" ] && [ -e "$dir/new" ]; then
+            rm -rf "$dir/new"
+        fi
+    done
+else
+    echo "$USERAPP_TARGET_DIR exists, skip template extraction."
+    echo "If you want to overwrite it manually, run:"
+    echo "  sudo tar -xf $USERAPP_DEMO_PATH -C $USERAPP_TARGET_DIR"
+
+    if [ -d "$USERAPP_TMP_PATH" ]; then
+        for dir in "$USERAPP_TMP_PATH"/*/; do
+            if [ -d "$dir" ]; then
+                if [ -e "$dir/new" ]; then
+                    dirname=$(basename "$dir")
+                    rm -rf "$USERAPP_TARGET_DIR/$dirname"
+                    cp -r "$dir" "$USERAPP_TARGET_DIR/$dirname"
+                    rm -rf "$USERAPP_TARGET_DIR/$dirname/new"
+                fi
+            fi
+        done
+    fi
+fi
+
+rm -rf "$USERAPP_TMP_PATH" || true
+
+if [ -d "$OVERLAY_TARGET_DIR" ]; then
+    echo "Copying overlay files from $OVERLAY_TARGET_DIR to / ..."
+    rsync -a --no-owner --no-group "$OVERLAY_TARGET_DIR"/ /
+else
+    echo "Overlay directory $OVERLAY_TARGET_DIR not found, skipping."
+fi
+
+check_and_fix_owner() {
+    local dir="$1"
+    if [ -d "$dir" ]; then
+        find "$dir" \( -uid 1000 -o -gid 1000 \) -exec chown root:root {} +
+    fi
+}
+
+for d in /kvmapp /kvmcomm /opt /res /root /soc /userapp /etc; do
+    check_and_fix_owner "$d" || true
+done
+
+# fix chrony owner
+chown _chrony:_chrony /var/lib/chrony >/dev/null 2>&1 || true
+
+mkdir -p /sdcard
+
+if [ -f "$WIFI_CONF" ]; then
+    SSID=$(grep '^WIFI_CFG_SSID=' "$WIFI_CONF" | cut -d'=' -f2-)
+    PASSWD=$(grep '^WIFI_CFG_PASSWD=' "$WIFI_CONF" | cut -d'=' -f2-)
+
+    if [ -n "$SSID" ] && [ -n "$PASSWD" ]; then
+        SCRIPTS_ROOT="/kvmcomm/scripts"
+        nohup "${SCRIPTS_ROOT}/wifi.sh" connect_start "$SSID" "$PASSWD" >/dev/null 2>&1 </dev/null &
+        disown
+    fi
+fi
+
+if [ -f /boot/configs ]; then
+    sed -i 's/\(maix_memory_cmm=\).*/\1200/' /boot/configs || true
+fi
+
+sed -i -E \
+    -e '/^#?SystemMaxUse=/c SystemMaxUse=200M' \
+    -e '/^#?SystemMaxFileSize=/c SystemMaxFileSize=50M' \
+    /etc/systemd/journald.conf
+
+grep -q '^SystemMaxUse=' /etc/systemd/journald.conf || echo 'SystemMaxUse=200M' | tee -a /etc/systemd/journald.conf
+grep -q '^SystemMaxFileSize=' /etc/systemd/journald.conf || echo 'SystemMaxFileSize=50M' | tee -a /etc/systemd/journald.conf
+
+sed -i '/\/sbin\/hwclock -w -f \/dev\/rtc0/d' /etc/crontab
+sed -i '/sleep 60 && systemctl restart ntp/d' /etc/crontab
+
+sed -i 's|^bash/etc/init.d/axemac.sh$|bash /etc/init.d/axemac.sh|' /etc/rc.local
+if [ -f /etc/rc.local ]; then
+    sed -i '/192\.168\.100\.200/d' /etc/rc.local
+fi
+
+ldconfig
+
+mkdir -p /etc/systemd/system/multi-user.target.wants
+[ -f /etc/systemd/system/kvmcomm.service ] && ln -sf /etc/systemd/system/kvmcomm.service /etc/systemd/system/multi-user.target.wants/kvmcomm.service
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    if [ "$(stat -c %d:%i /)" == "$(stat -c %d:%i /proc/1/root/.)" ]; then
+        if [ ! -d /root/factory_test ]; then
+            systemctl start kvmcomm.service
+        fi
+    fi
+fi

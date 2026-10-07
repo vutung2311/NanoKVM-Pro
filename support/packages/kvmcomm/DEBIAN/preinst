@@ -1,0 +1,13 @@
+#!/bin/bash
+set -e
+if systemctl is-active --quiet kvmcomm.service; then
+    systemctl stop kvmcomm.service >/dev/null 2>&1
+fi
+
+if [ -f /var/cache/debconf/config.dat ]; then
+    dash_sh_value=$(awk '/^Name: dash\/sh/{f=1} f && /^Value:/{print $2; exit}' /var/cache/debconf/config.dat)
+    if [ "$dash_sh_value" = "true" ]; then
+        echo "dash dash/sh boolean false" | debconf-set-selections
+        dpkg-reconfigure -f noninteractive dash >/dev/null 2>&1
+    fi
+fi
