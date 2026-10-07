@@ -191,7 +191,14 @@ def replace_axp(axp_file, replacements, output=None, work_dir=None):
             if not os.path.islink(sym_path):
                 raise RuntimeError(f"Usrmerge integrity failure: {sym_path} is not a symlink! Overlay corrupted rootfs structure.")
 
-        run_chroot_commands(mount_point=mount_point, commands=["apt update && apt install --reinstall -y ca-certificates && update-ca-certificates || true"])
+        # Refresh DNS and hosts configuration inside rootfs before network operations
+        setup_chroot_dns(mount_point)
+
+        run_chroot_commands(mount_point=mount_point, commands=[
+            "apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root update && "
+            "apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root install --reinstall -y ca-certificates && "
+            "update-ca-certificates || true"
+        ])
         run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/ssh.service"])
         run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/multi-user.target.wants/usb-gadget.service"])
         run_chroot_commands(mount_point=mount_point, commands=["rm -f /etc/systemd/system/sockets.target.wants/ssh.socket"])
@@ -361,22 +368,50 @@ def find_qemu_static():
 
 def setup_chroot_dns(mount_point):
     resolv_dest = os.path.join(mount_point, "etc/resolv.conf")
-    nameservers = []
-    if os.path.exists("/etc/resolv.conf"):
-        try:
-            with open("/etc/resolv.conf", "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("nameserver"):
-                        parts = line.split()
-                        if len(parts) >= 2 and not parts[1].startswith("127."):
-                            nameservers.append(parts[1])
-        except Exception:
-            pass
-    if not nameservers:
-        nameservers = ["1.1.1.1", "8.8.8.8"]
+    nsswitch_dest = os.path.join(mount_point, "etc/nsswitch.conf")
+    hosts_dest = os.path.join(mount_point, "etc/hosts")
+    hosts_bak = os.path.join(mount_point, "etc/hosts.bak")
 
-    content = "".join([f"nameserver {ns}\n" for ns in nameservers])
+    # 1. Guarantee ports.ubuntu.com resolution via /etc/hosts fallback (avoids DNS/ISP timeout)
+    if os.path.isdir(os.path.join(mount_point, "etc")):
+        if os.path.exists(hosts_dest) and not os.path.exists(hosts_bak):
+            subprocess.run(SUDO + ["cp", "-p", hosts_dest, hosts_bak], check=False)
+        subprocess.run(SUDO + [
+            "sh", "-c",
+            f"grep -q 'ports.ubuntu.com' {hosts_dest} 2>/dev/null || printf '\\n91.189.91.102 ports.ubuntu.com\\n91.189.91.104 ports.ubuntu.com\\n' >> {hosts_dest}"
+        ], check=False)
+
+    # 2. Gather DNS nameservers
+    nameservers = []
+    candidate_files = [
+        "/run/systemd/resolve/resolv.conf",
+        "/etc/resolv.conf",
+    ]
+    for resolv_file in candidate_files:
+        if os.path.exists(resolv_file):
+            try:
+                with open(resolv_file, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("nameserver"):
+                            parts = line.split()
+                            if len(parts) >= 2 and not parts[1].startswith("127."):
+                                if parts[1] not in nameservers:
+                                    nameservers.append(parts[1])
+            except Exception:
+                pass
+        if nameservers:
+            break
+
+    # Append reliable public DNS resolvers as fallback
+    for fallback in ["1.1.1.1", "8.8.8.8", "9.9.9.9"]:
+        if fallback not in nameservers:
+            nameservers.append(fallback)
+
+    # glibc MAXNS is 3; use first 3 nameservers with IPv4/single-request options
+    content = "".join([f"nameserver {ns}\n" for ns in nameservers[:3]])
+    content += "options timeout:2 attempts:2 rotate ndots:1\n"
+
     import tempfile
     try:
         with tempfile.NamedTemporaryFile("w", delete=False) as tf:
@@ -391,6 +426,7 @@ def setup_chroot_dns(mount_point):
                 subprocess.run(SUDO + ["rm", "-f", resolv_dest], check=False)
 
         subprocess.run(SUDO + ["cp", temp_resolv, resolv_dest], check=True)
+        subprocess.run(SUDO + ["chmod", "644", resolv_dest], check=True)
     finally:
         if 'temp_resolv' in locals() and os.path.exists(temp_resolv):
             try:
@@ -398,11 +434,40 @@ def setup_chroot_dns(mount_point):
             except OSError:
                 pass
 
+    # 3. Ensure nsswitch uses files dns during chroot (bypasses missing systemd-resolved socket)
+    if os.path.exists(nsswitch_dest):
+        subprocess.run(SUDO + [
+            "sed", "-i.bak",
+            "s/^hosts:.*/hosts:          files dns/",
+            nsswitch_dest
+        ], check=False)
+
+def restore_chroot_dns(mount_point):
+    resolv_dest = os.path.join(mount_point, "etc/resolv.conf")
+    nsswitch_dest = os.path.join(mount_point, "etc/nsswitch.conf")
+    nsswitch_bak = os.path.join(mount_point, "etc/nsswitch.conf.bak")
+    hosts_dest = os.path.join(mount_point, "etc/hosts")
+    hosts_bak = os.path.join(mount_point, "etc/hosts.bak")
+
+    if os.path.exists(hosts_bak):
+        subprocess.run(SUDO + ["mv", "-f", hosts_bak, hosts_dest], check=False)
+
+    if os.path.exists(nsswitch_bak):
+        subprocess.run(SUDO + ["mv", "-f", nsswitch_bak, nsswitch_dest], check=False)
+
+    if os.path.isdir(os.path.join(mount_point, "etc")):
+        try:
+            if os.path.islink(resolv_dest) or os.path.exists(resolv_dest):
+                os.remove(resolv_dest)
+        except OSError:
+            subprocess.run(SUDO + ["rm", "-f", resolv_dest], check=False)
+        subprocess.run(SUDO + ["ln", "-sf", "../run/systemd/resolve/stub-resolv.conf", resolv_dest], check=False)
+
 def run_chroot_commands(mount_point="/mnt", commands=None):
     if commands:
         for cmd in commands:
             full_cmd = f"export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export DEBIAN_FRONTEND=noninteractive; {cmd}"
-            subprocess.run(SUDO + ["chroot", mount_point, "bash", "-c", full_cmd], check=True)
+            subprocess.run(SUDO + ["chroot", mount_point, "/bin/bash", "-c", full_cmd], check=True)
     else:
         subprocess.run(SUDO + ["chroot", mount_point, "/bin/bash"], check=True)
 
@@ -420,6 +485,7 @@ def is_mounted(path):
 
 def umount_chroot(mount_point="/mnt"):
     mount_point = os.path.realpath(mount_point)
+    restore_chroot_dns(mount_point)
     qemu_path = os.path.join(mount_point, "usr/bin/qemu-aarch64-static")
     if os.path.exists(qemu_path):
         subprocess.run(SUDO + ["rm", "-rf", qemu_path], check=False)

@@ -32,9 +32,15 @@ OUTPUT_IMG_XZ   ?= $(DIST_DIR)/NanoKVMPro_Custom_$(VERSION_UNDERSCORE).img.xz
 VENV_DIR        ?= $(BUILD_IMAGE_DIR)/.venv
 VENV_PYTHON     ?= $(VENV_DIR)/bin/python3
 BUILD_PYTHON    ?= $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),$(shell command -v python3 || echo python3))
-AXP2IMG         ?= $(shell command -v axp2img 2>/dev/null || ([ -x $(VENV_DIR)/bin/axp2img ] && echo $(VENV_DIR)/bin/axp2img) || echo axp2img)
+AXP2IMG         ?= $(if $(wildcard $(BUILD_IMAGE_DIR)/axp2img.py),$(BUILD_PYTHON) $(BUILD_IMAGE_DIR)/axp2img.py,$(shell command -v axp2img 2>/dev/null || ([ -x $(VENV_DIR)/bin/axp2img ] && echo $(VENV_DIR)/bin/axp2img) || echo axp2img))
 PNPM            ?= $(shell command -v pnpm 2>/dev/null || (command -v npx >/dev/null 2>&1 && echo "npx -y pnpm") || echo pnpm)
 TOOLCHAIN_INI   ?= $(SUPPORT_DIR)/toolchains/toolchain.ini
+
+# Image Compression Configuration (Multi-Threaded XZ)
+XZ_THREADS          ?= 0
+XZ_MEMLIMIT         ?= 80%
+XZ_LEVEL            ?= 9
+export XZ_OPT       ?= --memlimit-compress=$(XZ_MEMLIMIT)
 
 # Kernel Build & Packaging Configuration
 KERNEL_BUILD_SCRIPT ?= $(SUPPORT_DIR)/scripts/build_kernel.sh
@@ -388,12 +394,12 @@ image-img: $(OUTPUT_IMG_XZ)
 
 $(OUTPUT_IMG_XZ): $(OUTPUT_AXP)
 	@echo -e "$(CYAN)==> Converting AXP to raw disk image (.img.xz) using axp2img...$(RESET)"
-	@if [ ! -x "$$(command -v $(AXP2IMG) 2>/dev/null)" ] && [ ! -x "$(AXP2IMG)" ]; then \
+	@if [ ! -f "$(BUILD_IMAGE_DIR)/axp2img.py" ] && [ ! -x "$$(command -v $(firstword $(AXP2IMG)) 2>/dev/null)" ]; then \
 		echo -e "$(RED)Error: axp2img tool not found at $(AXP2IMG).$(RESET)"; \
 		echo -e "$(YELLOW)Run 'make setup-tooling' to configure the build environment.$(RESET)"; \
 		exit 1; \
 	fi
-	$(AXP2IMG) -i $(OUTPUT_AXP) -o $(OUTPUT_IMG_XZ)
+	XZ_THREADS=$(XZ_THREADS) XZ_MEMLIMIT=$(XZ_MEMLIMIT) XZ_LEVEL=$(XZ_LEVEL) $(AXP2IMG) -i $(OUTPUT_AXP) -o $(OUTPUT_IMG_XZ) -T $(XZ_THREADS)
 	@echo -e "$(GREEN)[✓] Raw compressed image created: $(OUTPUT_IMG_XZ)$(RESET)"
 
 ## Build both AXP and raw .img.xz images
