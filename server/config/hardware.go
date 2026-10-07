@@ -14,7 +14,22 @@ const (
 	HWVersionATX
 
 	HWVersionFile = "/proc/lt6911_info/version"
+
+	DefaultDeskDeviceNumber = "NebE20020"
+	DefaultATXDeviceNumber  = "NxaL020020"
 )
+
+var DeviceNumberFiles = []string{
+	"/etc/kvm/device_number",
+	"/kvmapp/device_number",
+	"/boot/device_number",
+}
+
+var HWModelFiles = []string{
+	"/etc/kvm/model",
+	"/kvmapp/model",
+	"/boot/model",
+}
 
 var HWPro = Hardware{
 	Version:      HWVersionDesk,
@@ -34,42 +49,69 @@ func (h HWVersion) String() string {
 }
 
 func DeviceNumber() string {
+	// 1. Try reading the hardware proc file (/proc/lt6911_info/version)
 	content, err := os.ReadFile(HWVersionFile)
-	if err != nil {
-		return "unknown"
+	if err == nil {
+		parts := strings.Fields(strings.TrimSpace(string(content)))
+		if len(parts) > 0 {
+			pn := strings.TrimSpace(parts[len(parts)-1])
+			if pn != "" && !strings.EqualFold(pn, "unknown") {
+				return pn
+			}
+		}
 	}
 
-	parts := strings.Split(string(content), " ")
-	length := len(parts)
-
-	if length > 0 {
-		return parts[length-1]
+	// 2. Check for configured/override device number files
+	for _, file := range DeviceNumberFiles {
+		if data, err := os.ReadFile(file); err == nil {
+			pn := strings.TrimSpace(string(data))
+			if pn != "" && !strings.EqualFold(pn, "unknown") {
+				return pn
+			}
+		}
 	}
 
-	return "unknown"
+	// 3. Fallback to model-appropriate product identity
+	if GetHwVersion() == HWVersionATX {
+		return DefaultATXDeviceNumber
+	}
+	return DefaultDeskDeviceNumber
 }
 
 func GetHwVersion() HWVersion {
-	content, err := os.ReadFile(HWVersionFile)
-	if err != nil {
-		return HWVersionUnknown
-	}
-
-	version := strings.ToLower(string(content))
-
 	var atx = regexp.MustCompile(`(?i)atx`)
 	var desk = regexp.MustCompile(`(?i)(desk)`)
 
-	switch {
-	case desk.MatchString(version):
-		return HWVersionDesk
-	case atx.MatchString(version):
-		return HWVersionATX
-	default:
-		return HWVersionUnknown
+	content, err := os.ReadFile(HWVersionFile)
+	if err == nil {
+		version := strings.ToLower(string(content))
+		switch {
+		case desk.MatchString(version):
+			return HWVersionDesk
+		case atx.MatchString(version):
+			return HWVersionATX
+		}
 	}
+
+	// Fallback to configured model files
+	for _, file := range HWModelFiles {
+		if data, err := os.ReadFile(file); err == nil {
+			m := strings.ToLower(string(data))
+			switch {
+			case desk.MatchString(m):
+				return HWVersionDesk
+			case atx.MatchString(m):
+				return HWVersionATX
+			}
+		}
+	}
+
+	// Default for NanoKVM-Pro is Desk
+	return HWVersionDesk
 }
 
 func getHardware() (h Hardware) {
-	return HWPro
+	h = HWPro
+	h.Version = GetHwVersion()
+	return h
 }
