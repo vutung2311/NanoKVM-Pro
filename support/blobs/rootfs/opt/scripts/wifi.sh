@@ -170,14 +170,14 @@ function wifi_start()
     if lsmod | grep -q aic8800_bsp; then
         echo "aic8800_bsp already loaded"
     else
-        insmod /soc/ko/aic8800_bsp.ko
+        insmod /soc/ko/aic8800_bsp.ko aicwf_dbg_level_bsp=3
     fi
 
     if lsmod | grep -q aic8800_fdrv; then
         echo "aic8800_fdrv already loaded"
-        exit 1
+        exit 0
     else
-        insmod /soc/ko/aic8800_fdrv.ko
+        insmod /soc/ko/aic8800_fdrv.ko aicwf_dbg_level=3
     fi
 
     # wpa_supplicant_start
