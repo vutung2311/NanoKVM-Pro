@@ -81,7 +81,9 @@ async def wait_for_lt6911_ready(timeout_sec: float = 2.0) -> bool:
     while time.time() - start < timeout_sec:
         ready = await loop.run_in_executor(None, probe_i2c)
         if ready:
-            logger.info(f"LT6911 I2C ready in {(time.time() - start)*1000:.1f}ms")
+            # Allow internal MCU and EDID RAM to stabilize after power-on reset
+            await asyncio.sleep(0.2)
+            logger.info(f"LT6911 I2C and EDID ready in {(time.time() - start)*1000:.1f}ms")
             return True
         await asyncio.sleep(0.015)
 
