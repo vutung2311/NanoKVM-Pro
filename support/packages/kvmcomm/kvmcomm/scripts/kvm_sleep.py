@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import time
+import fcntl
 import asyncio
 import aiofiles
 import argparse
@@ -52,6 +53,40 @@ async def set_lt6911_power(on: bool):
             await f.write("1" if on else "0")
     except Exception as e:
         logger.error(f"Failed to write {path}: {e}")
+
+
+I2C_SLAVE_FORCE = 0x0706
+I2C_DEV = "/dev/i2c-0"
+LT6911_ADDR = 0x2b
+
+
+async def wait_for_lt6911_ready(timeout_sec: float = 2.0) -> bool:
+    """Poll LT6911 over I2C until its internal MCU ACKs and EDID RAM is ready."""
+    loop = asyncio.get_running_loop()
+    start = time.time()
+
+    def probe_i2c() -> bool:
+        try:
+            fd = os.open(I2C_DEV, os.O_RDWR)
+            try:
+                fcntl.ioctl(fd, I2C_SLAVE_FORCE, LT6911_ADDR)
+                os.write(fd, b"\x00")
+                os.read(fd, 1)
+                return True
+            finally:
+                os.close(fd)
+        except OSError:
+            return False
+
+    while time.time() - start < timeout_sec:
+        ready = await loop.run_in_executor(None, probe_i2c)
+        if ready:
+            logger.info(f"LT6911 I2C ready in {(time.time() - start)*1000:.1f}ms")
+            return True
+        await asyncio.sleep(0.015)
+
+    logger.warning("Timed out waiting for LT6911 I2C readiness")
+    return False
 
 
 async def wait_for_driver_ready(timeout_sec: float = 30.0) -> bool:
@@ -199,9 +234,9 @@ class PowerController:
         if (await get_lt6911_power()) == on:
             return
         if on:
-            await set_lt6911_power(True)
             await set_lt86102_power(False)
-            await asyncio.sleep(0.1)
+            await set_lt6911_power(True)
+            await wait_for_lt6911_ready()
             await set_lt86102_power(True)
         else:
             await set_lt86102_power(False)
