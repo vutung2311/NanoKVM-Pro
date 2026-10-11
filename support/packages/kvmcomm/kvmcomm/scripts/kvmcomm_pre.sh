@@ -16,9 +16,12 @@ if [ -d "${APP_ROOT}/ko_${KVER}" ]; then
     fi
 fi
 
-# Silence verbose AMSDU packet traces from AIC8800 Wi-Fi driver in dmesg
+# Silence verbose traces (LOGTRACE=4) from AIC8800 Wi-Fi driver in dmesg (bitmask: 3 = LOGERROR|LOGINFO)
 if [ -e /sys/module/aic8800_fdrv/parameters/aicwf_dbg_level ]; then
-    echo 7 > /sys/module/aic8800_fdrv/parameters/aicwf_dbg_level 2>/dev/null || true
+    echo 3 > /sys/module/aic8800_fdrv/parameters/aicwf_dbg_level 2>/dev/null || true
+fi
+if [ -e /sys/module/aic8800_bsp/parameters/aicwf_dbg_level_bsp ]; then
+    echo 3 > /sys/module/aic8800_bsp/parameters/aicwf_dbg_level_bsp 2>/dev/null || true
 fi
 
 safe_rm() {
