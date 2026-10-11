@@ -67,7 +67,7 @@ fw_setenv bootsystem A
 1. **AIC8800 WiFi Drivers:**
    - Modules: `aic8800_bsp.ko`, `aic8800_fdrv.ko`, `aic8800_btlpm.ko`.
    - Firmware: `/opt/firmware/aic8800/` or `/lib/firmware/aic8800/`.
-   - Modprobe config: `/etc/modprobe.d/aic8800.conf`.
+   - Modprobe config: `/etc/modprobe.d/aic8800.conf` (use `aicwf_dbg_level=3` for `LOGERROR|LOGINFO`; bitmask: `1=LOGERROR`, `2=LOGINFO`, `4=LOGTRACE`, `8=LOGDEBUG`).
 2. **Axera Multimedia Acceleration Modules:**
    - Located in `/soc/ko/`: `ax_sys.ko`, `ax_venc.ko`, `ax_vo.ko`, `ax_cmm.ko`, `ax_ivps.ko`, `ax_pool.ko`.
    - Auto-loaded via `/soc/scripts/auto_load_all_drv.sh` during early system boot.
