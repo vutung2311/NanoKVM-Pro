@@ -5,7 +5,7 @@ After=kvmcomm.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /kvmcomm/scripts/kvm_sleep.py --log-level=WARNING
+ExecStart=/usr/bin/python3 /kvmcomm/scripts/kvm_sleep.py --log-level=INFO
 Restart=on-failure
 RestartSec=5
 SyslogIdentifier=kvm-sleep
