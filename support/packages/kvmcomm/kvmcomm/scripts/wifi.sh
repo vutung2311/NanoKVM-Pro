@@ -164,6 +164,8 @@ start_service() {
     ensure_wpa_conf
 
     if ! pgrep -f "wpa_supplicant.*${WIFI_IFACE}" >/dev/null; then
+        # Ensure any unmanaged or stale wpa_supplicant instances are terminated to prevent EAPOL packet race conditions
+        pkill -9 -f "wpa_supplicant" 2>/dev/null || true
         debug_print "[wifi] starting wpa_supplicant..."
         mkdir -p /run/wpa_supplicant
         wpa_supplicant -D "${DRIVER}" -i "$WIFI_IFACE" -c "$WPA_CONF_FILE" -B -P "$WPA_PID_FILE" >/dev/null 2>&1
@@ -630,7 +632,8 @@ connect_wifi() {
     ip addr flush dev "$WIFI_IFACE"
 
     debug_print "[wifi] requesting IP address via DHCP..."
-    if ! udhcpc -i "${WIFI_IFACE}" -s /kvmcomm/scripts/udhcpc.script >/dev/null 2>&1; then
+    pkill -f "udhcpc.*-i ${WIFI_IFACE}" 2>/dev/null || true
+    if ! udhcpc -i "${WIFI_IFACE}" -s /kvmcomm/scripts/udhcpc.script -b >/dev/null 2>&1; then
         echo "[wifi] DHCP failed on $WIFI_IFACE" >&2
         return 1
     fi
@@ -814,7 +817,8 @@ connect_enterprise_wifi() {
     ip addr flush dev "$WIFI_IFACE"
 
     debug_print "[wifi] requesting IP address via DHCP..."
-    if ! udhcpc -i "${WIFI_IFACE}" -s /kvmcomm/scripts/udhcpc.script >/dev/null 2>&1; then
+    pkill -f "udhcpc.*-i ${WIFI_IFACE}" 2>/dev/null || true
+    if ! udhcpc -i "${WIFI_IFACE}" -s /kvmcomm/scripts/udhcpc.script -b >/dev/null 2>&1; then
         echo "[wifi] DHCP failed on $WIFI_IFACE" >&2
         return 1
     fi

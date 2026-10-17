@@ -101,9 +101,15 @@ ldconfig
 mkdir -p /etc/systemd/system/multi-user.target.wants
 [ -f /etc/systemd/system/kvmcomm.service ] && ln -sf /etc/systemd/system/kvmcomm.service /etc/systemd/system/multi-user.target.wants/kvmcomm.service
 
+# Disable and mask systemd wpa_supplicant to avoid EAPOL / GTK rekey races with wifi.sh
+rm -f /etc/systemd/system/multi-user.target.wants/wpa_supplicant.service /etc/systemd/system/dbus-fi.w1.wpa_supplicant1.service
+ln -sf /dev/null /etc/systemd/system/wpa_supplicant.service
+ln -sf /dev/null /etc/systemd/system/dbus-fi.w1.wpa_supplicant1.service
+
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     if [ "$(stat -c %d:%i /)" == "$(stat -c %d:%i /proc/1/root/.)" ]; then
+        systemctl stop wpa_supplicant.service 2>/dev/null || true
         if [ ! -d /root/factory_test ]; then
             systemctl start kvmcomm.service
         fi
