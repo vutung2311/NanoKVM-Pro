@@ -300,7 +300,8 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
             fi''',
             "ldconfig"
         ])
-        # Disable redundant background timers & services (including nginx so NanoKVM port 80/443 is free)
+        # Disable redundant background timers & services (including nginx so NanoKVM port 80/443 is free,
+        # and masking systemd wpa_supplicant to prevent EAPOL/GTK rekey packet races with wifi.sh on wlan0)
         run_chroot_commands(mount_point=mount_point, commands=[
             "rm -f /etc/systemd/system/timers.target.wants/apt-daily.timer "
             "/etc/systemd/system/timers.target.wants/apt-daily-upgrade.timer "
@@ -310,7 +311,11 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
             "/etc/systemd/system/multi-user.target.wants/isc-dhcp-server6.service "
             "/etc/systemd/system/multi-user.target.wants/nginx.service "
             "/etc/systemd/system/multi-user.target.wants/kvmd-nginx.service "
-            "/etc/systemd/system/multi-user.target.wants/cua.service"
+            "/etc/systemd/system/multi-user.target.wants/cua.service "
+            "/etc/systemd/system/multi-user.target.wants/wpa_supplicant.service "
+            "/etc/systemd/system/dbus-fi.w1.wpa_supplicant1.service",
+            "ln -sf /dev/null /etc/systemd/system/wpa_supplicant.service",
+            "ln -sf /dev/null /etc/systemd/system/dbus-fi.w1.wpa_supplicant1.service"
         ])
 
         # Configure journald to volatile RAM storage (16MB max) to eliminate eMMC flash churn
