@@ -97,7 +97,7 @@ var CharMap = map[rune]Char{
 	')': {2, 39}, // Shift + 0
 
 	// Other common characters
-	'\n': {0, 40}, // Enter (Return)
+	'\n': {2, 40}, // Shift + Enter
 	'\t': {0, 43}, // Tab
 	' ':  {0, 44}, // Space
 	'-':  {0, 45}, // Hyphen / Minus
