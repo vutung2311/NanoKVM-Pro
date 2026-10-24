@@ -226,6 +226,16 @@ func TestSubmitKeyboardWaitGadgetAbsent(t *testing.T) {
 	}
 }
 
+func TestPasteNewlineUsesShiftEnter(t *testing.T) {
+	key, ok := CharMap['\n']
+	if !ok {
+		t.Fatalf("missing newline in CharMap")
+	}
+	if key.Modifiers != 2 || key.Code != 40 {
+		t.Fatalf("got Modifiers=%d Code=%d, want Modifiers=2 Code=40 (Shift+Enter)", key.Modifiers, key.Code)
+	}
+}
+
 // ---- mouse ----
 
 func TestMouseRelativeMotionCarriedOverStall(t *testing.T) {

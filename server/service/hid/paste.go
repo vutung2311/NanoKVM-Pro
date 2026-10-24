@@ -1,6 +1,7 @@
 package hid
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,7 +28,10 @@ func (s *Service) Paste(c *gin.Context) {
 		return
 	}
 
-	if len(req.Content) > 1024 {
+	content := strings.ReplaceAll(req.Content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+
+	if len(content) > 1024 {
 		rsp.ErrRsp(c, -2, "content too long")
 		return
 	}
@@ -35,28 +39,78 @@ func (s *Service) Paste(c *gin.Context) {
 	keyUp := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 	h := GetHid()
 
-	for _, char := range req.Content {
+	for _, char := range content {
 		key, ok := CharMap[char]
 		if !ok {
 			log.Debugf("unknown key '%c' (rune: %d)", char, char)
 			continue
 		}
 
-		keyDown := []byte{byte(key.Modifiers), 0x00, byte(key.Code), 0x00, 0x00, 0x00, 0x00, 0x00}
+		mod := byte(key.Modifiers)
+		code := byte(key.Code)
 
-		for _, report := range [][]byte{keyDown, keyUp} {
-			if err := h.SubmitKeyboardWait(report, pasteReportTimeout); err != nil {
-				h.SubmitKeyboard(keyUp) // never leave a key held
-				log.Warnf("hid paste aborted: %s", err)
+		if mod != 0 {
+			// Discrete modifier sequence: hold modifier before and through the key press
+			// so the target host OS and browser event loop reliably recognize the modifier state.
+			modDown := []byte{mod, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+			if err := h.SubmitKeyboardWait(modDown, pasteReportTimeout); err != nil {
+				h.SubmitKeyboard(keyUp)
+				log.Warnf("hid paste aborted on modDown: %s", err)
+				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
+				return
+			}
+			time.Sleep(15 * time.Millisecond)
+
+			keyDown := []byte{mod, 0x00, code, 0x00, 0x00, 0x00, 0x00, 0x00}
+			if err := h.SubmitKeyboardWait(keyDown, pasteReportTimeout); err != nil {
+				h.SubmitKeyboard(keyUp)
+				log.Warnf("hid paste aborted on keyDown: %s", err)
+				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+
+			// Release the key while keeping modifier active
+			if err := h.SubmitKeyboardWait(modDown, pasteReportTimeout); err != nil {
+				h.SubmitKeyboard(keyUp)
+				log.Warnf("hid paste aborted on keyRelease: %s", err)
+				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
+				return
+			}
+			time.Sleep(15 * time.Millisecond)
+
+			// Release the modifier
+			if err := h.SubmitKeyboardWait(keyUp, pasteReportTimeout); err != nil {
+				log.Warnf("hid paste aborted on modRelease: %s", err)
+				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
+				return
+			}
+		} else {
+			keyDown := []byte{0x00, 0x00, code, 0x00, 0x00, 0x00, 0x00, 0x00}
+			if err := h.SubmitKeyboardWait(keyDown, pasteReportTimeout); err != nil {
+				h.SubmitKeyboard(keyUp)
+				log.Warnf("hid paste aborted on keyDown: %s", err)
+				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+
+			if err := h.SubmitKeyboardWait(keyUp, pasteReportTimeout); err != nil {
+				log.Warnf("hid paste aborted on keyUp: %s", err)
 				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
 				return
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+
+		if char == '\n' {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
 
 	rsp.OkRsp(c)
-	log.Debugf("hid paste success, total %d characters processed", len(req.Content))
+	log.Debugf("hid paste success, total %d characters processed", len(content))
 }
 
 // pasteReportTimeout bounds how long Paste waits for the host to accept a
@@ -97,7 +151,7 @@ var CharMap = map[rune]Char{
 	')': {2, 39}, // Shift + 0
 
 	// Other common characters
-	'\n': {0, 40}, // Enter (Return)
+	'\n': {2, 40}, // Shift + Enter
 	'\t': {0, 43}, // Tab
 	' ':  {0, 44}, // Space
 	'-':  {0, 45}, // Hyphen / Minus
