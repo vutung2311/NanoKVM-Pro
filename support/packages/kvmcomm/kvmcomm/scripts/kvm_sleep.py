@@ -10,6 +10,12 @@ from typing import List, Tuple
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--log-level", default="WARNING")
+parser.add_argument(
+    "--idle-timeout",
+    type=float,
+    default=30.0,
+    help="Idle timeout in seconds before powering off HDMI (default: 30.0)",
+)
 args = parser.parse_args()
 
 logging.basicConfig(
@@ -26,6 +32,7 @@ gstate = {
     "ui_ivps_act": False,
 }
 gstate_lock = asyncio.Lock()
+_power_off_task: asyncio.Task | None = None
 
 
 class SleepMsgType:
@@ -295,8 +302,31 @@ async def is_strip_working() -> bool:
                 return False
     return False
 
+async def _delayed_power_off(delay: float):
+    global _power_off_task
+    try:
+        logger.info(f"Idle detected, power-off scheduled in {delay:.1f}s")
+        await asyncio.sleep(delay)
+        should_power_off = False
+        async with gstate_lock:
+            if not any(gstate.values()):
+                should_power_off = True
+                logger.info("Idle timeout expired, turning power OFF")
+            else:
+                logger.info("Activity resumed before idle timeout expired; power-off aborted")
+        if should_power_off:
+            await set_power(False)
+    except asyncio.CancelledError:
+        logger.info("Power-off cancelled due to resumed activity")
+    finally:
+        async with gstate_lock:
+            if _power_off_task is asyncio.current_task():
+                _power_off_task = None
+
+
 async def update_state(key: str, value: bool):
-    need_active = False
+    global _power_off_task
+    action = None  # None, "power_on", "power_off", or ("schedule_off", delay)
     async with gstate_lock:
         if gstate[key] == value:
             return
@@ -304,7 +334,24 @@ async def update_state(key: str, value: bool):
         need_active = any(gstate.values())
         logger.info(f"State changed: {key}={value}, need_power={'ON' if need_active else 'OFF'}")
 
-    await set_power(need_active)
+        if need_active:
+            if _power_off_task and not _power_off_task.done():
+                _power_off_task.cancel()
+                _power_off_task = None
+            action = "power_on"
+        else:
+            if _power_off_task is None or _power_off_task.done():
+                if args.idle_timeout > 0:
+                    action = ("schedule_off", args.idle_timeout)
+                else:
+                    action = "power_off"
+
+    if action == "power_on":
+        await set_power(True)
+    elif action == "power_off":
+        await set_power(False)
+    elif isinstance(action, tuple) and action[0] == "schedule_off":
+        _power_off_task = asyncio.create_task(_delayed_power_off(action[1]))
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -383,6 +430,12 @@ async def main():
         logger.info("Exit requested by user")
     finally:
         monitor_task.cancel()
+        if _power_off_task and not _power_off_task.done():
+            _power_off_task.cancel()
+            try:
+                await _power_off_task
+            except asyncio.CancelledError:
+                pass
         try:
             await monitor_task
         except asyncio.CancelledError:
