@@ -152,8 +152,14 @@ ensure_wpa_conf() {
         cat <<EOF >"$WPA_CONF_FILE"
 ctrl_interface=/run/wpa_supplicant
 update_config=1
+sae_pwe=2
 EOF
         debug_print "[wifi] created default wpa config at $WPA_CONF_FILE"
+    else
+        if ! grep -q "^sae_pwe=" "$WPA_CONF_FILE"; then
+            echo "sae_pwe=2" >> "$WPA_CONF_FILE"
+            debug_print "[wifi] added sae_pwe=2 to $WPA_CONF_FILE"
+        fi
     fi
 }
 
@@ -178,6 +184,7 @@ start_service() {
         debug_print "[wifi] warning: control socket not found!"
     else
         debug_print "[wifi] wpa_supplicant is running on $WIFI_IFACE"
+        wpa_cli -i "$WIFI_IFACE" set sae_pwe 2 >/dev/null 2>&1 || true
     fi
 
     ip link set dev "$WIFI_IFACE" up
@@ -559,6 +566,64 @@ unescape_non_ascii() {
     printf '%b' "$result"
 }
 
+rollback_wifi() {
+    local prev_id="$1"
+    local prev_ssid="$2"
+    local WIFI_IFACE
+    WIFI_IFACE=$(get_wireless_interface)
+
+    debug_print "[wifi] attempting rollback to previous network (id=$prev_id, ssid=$prev_ssid)..."
+
+    if [[ -z "$prev_id" && -n "$prev_ssid" && -n "$WIFI_IFACE" ]]; then
+        local prev_ssid_escaped
+        prev_ssid_escaped=$(escape_non_ascii "$prev_ssid")
+        prev_id=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' -v s="$prev_ssid_escaped" 'NR>1 && $2==s {print $1; exit}')
+    fi
+
+    if [[ -z "$prev_id" && -n "$WIFI_IFACE" ]]; then
+        local fallback_ssid=""
+        if [[ -s "$PREVIOUS_WIFI_SAVE" ]]; then
+            fallback_ssid=$(<"$PREVIOUS_WIFI_SAVE")
+        elif [[ -s "$PREVIOUS_WIFI" ]]; then
+            fallback_ssid=$(<"$PREVIOUS_WIFI")
+        elif [[ -s "$WIFI_CFG_PATH" ]]; then
+            fallback_ssid=$(grep -E '^WIFI_CFG_SSID=' "$WIFI_CFG_PATH" | cut -d= -f2-)
+        fi
+        if [[ -n "$fallback_ssid" ]]; then
+            local fb_escaped
+            fb_escaped=$(escape_non_ascii "$fallback_ssid")
+            prev_id=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' -v s="$fb_escaped" 'NR>1 && $2==s {print $1; exit}')
+            prev_ssid="$fallback_ssid"
+        fi
+    fi
+
+    if [[ -n "$prev_id" && -n "$WIFI_IFACE" ]]; then
+        debug_print "[wifi] rollback: re-enabling network id=$prev_id (ssid=$prev_ssid)"
+        wpa_cli -i "$WIFI_IFACE" enable_network "$prev_id" >/dev/null 2>&1
+        wpa_cli -i "$WIFI_IFACE" select_network "$prev_id" >/dev/null 2>&1
+        wpa_cli -i "$WIFI_IFACE" save_config >/dev/null 2>&1
+
+        local retry=0
+        while [ $retry -lt 15 ]; do
+            if wpa_cli -i "$WIFI_IFACE" status 2>/dev/null | grep -qF "wpa_state=COMPLETED"; then
+                debug_print "[wifi] rollback: connection re-established"
+                break
+            fi
+            sleep 1
+            ((retry++))
+        done
+
+        ip addr flush dev "$WIFI_IFACE" 2>/dev/null || true
+        pkill -f "udhcpc.*-i ${WIFI_IFACE}" 2>/dev/null || true
+        udhcpc -i "${WIFI_IFACE}" -s /kvmcomm/scripts/udhcpc.script -b >/dev/null 2>&1
+        debug_print "[wifi] rollback completed for $prev_ssid"
+        return 0
+    fi
+
+    debug_print "[wifi] rollback: no previous network available to restore"
+    return 1
+}
+
 connect_wifi() {
     local ssid="$1"
     local password="$2"
@@ -570,6 +635,25 @@ connect_wifi() {
     if [[ ! -S "/run/wpa_supplicant/${WIFI_IFACE}" ]]; then
         echo "[wifi] wpa_supplicant socket not found for $WIFI_IFACE" >&2
         return 1
+    fi
+
+    # Ensure sae_pwe is set for SAE/WPA3 support
+    wpa_cli -i "$WIFI_IFACE" set sae_pwe 2 >/dev/null 2>&1 || true
+
+    # Record previous network for rollback in case connection fails
+    local prev_ssid=""
+    if [[ -s "$PREVIOUS_WIFI_SAVE" ]]; then
+        prev_ssid=$(<"$PREVIOUS_WIFI_SAVE")
+    elif [[ -s "$PREVIOUS_WIFI" ]]; then
+        prev_ssid=$(<"$PREVIOUS_WIFI")
+    elif [[ -s "$WIFI_CFG_PATH" ]]; then
+        prev_ssid=$(grep -E '^WIFI_CFG_SSID=' "$WIFI_CFG_PATH" | cut -d= -f2-)
+    fi
+    local prev_id=""
+    if [[ -n "$prev_ssid" ]]; then
+        local prev_ssid_escaped
+        prev_ssid_escaped=$(escape_non_ascii "$prev_ssid")
+        prev_id=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' -v s="$prev_ssid_escaped" 'NR>1 && $2==s {print $1; exit}')
     fi
 
     local ssid_escaped
@@ -586,24 +670,34 @@ connect_wifi() {
         existing=""
     fi
 
+    local id=""
+    local is_new_network=false
     if [[ -n "$existing" ]]; then
+        id="$existing"
         debug_print "[wifi] found existing network id=$existing, reusing."
         wpa_cli -i "$WIFI_IFACE" set_network "$existing" mesh_fwding 0 >/dev/null
         wpa_cli -i "$WIFI_IFACE" enable_network "$existing" >/dev/null
         wpa_cli -i "$WIFI_IFACE" select_network "$existing" >/dev/null
         wpa_cli -i "$WIFI_IFACE" save_config >/dev/null
     else
+        is_new_network=true
         debug_print "[wifi] adding new network: $ssid"
-        local id
         id=$(wpa_cli -i "$WIFI_IFACE" add_network | tail -n1)
         wpa_cli -i "$WIFI_IFACE" set_network "$id" ssid "\"$ssid\"" >/dev/null
 
         if [[ -z "$password" ]]; then
             wpa_cli -i "$WIFI_IFACE" set_network "$id" key_mgmt NONE >/dev/null
         else
-            local psk
-            psk=$(wpa_passphrase "$ssid" "$password" 2>/dev/null | awk -F= '/^[ \t]*psk=[^#]/{print $2; exit}')
-            wpa_cli -i "$WIFI_IFACE" set_network "$id" psk "$psk" >/dev/null
+            # Support both WPA2-PSK and WPA3-Personal (SAE)
+            wpa_cli -i "$WIFI_IFACE" set_network "$id" key_mgmt "WPA-PSK SAE" >/dev/null
+            wpa_cli -i "$WIFI_IFACE" set_network "$id" ieee80211w 1 >/dev/null
+            if [[ ${#password} -eq 64 && "$password" =~ ^[0-9a-fA-F]{64}$ ]]; then
+                wpa_cli -i "$WIFI_IFACE" set_network "$id" psk "$password" >/dev/null
+            else
+                local escaped_pw="${password//\\/\\\\}"
+                escaped_pw="${escaped_pw//\"/\\\"}"
+                wpa_cli -i "$WIFI_IFACE" set_network "$id" psk "\"$escaped_pw\"" >/dev/null
+            fi
         fi
 
         wpa_cli -i "$WIFI_IFACE" set_network "$id" mesh_fwding 0 >/dev/null
@@ -615,7 +709,7 @@ connect_wifi() {
 
     debug_print "[wifi] waiting for connection..."
     local retry=0
-    while [ $retry -lt 10 ]; do
+    while [ $retry -lt 20 ]; do
         if wpa_cli -i "$WIFI_IFACE" status | grep -qF "wpa_state=COMPLETED"; then
             debug_print "[wifi] connection established"
             break
@@ -624,8 +718,13 @@ connect_wifi() {
         ((retry++))
     done
 
-    if [ $retry -eq 10 ]; then
+    if [ $retry -ge 20 ]; then
         debug_print "[wifi] connection timeout" >&2
+        if [[ "$is_new_network" == "true" && -n "$id" ]]; then
+            wpa_cli -i "$WIFI_IFACE" remove_network "$id" >/dev/null 2>&1 || true
+            wpa_cli -i "$WIFI_IFACE" save_config >/dev/null 2>&1 || true
+        fi
+        rollback_wifi "$prev_id" "$prev_ssid"
         return 1
     fi
 
@@ -635,6 +734,11 @@ connect_wifi() {
     pkill -f "udhcpc.*-i ${WIFI_IFACE}" 2>/dev/null || true
     if ! udhcpc -i "${WIFI_IFACE}" -s /kvmcomm/scripts/udhcpc.script -b >/dev/null 2>&1; then
         echo "[wifi] DHCP failed on $WIFI_IFACE" >&2
+        if [[ "$is_new_network" == "true" && -n "$id" ]]; then
+            wpa_cli -i "$WIFI_IFACE" remove_network "$id" >/dev/null 2>&1 || true
+            wpa_cli -i "$WIFI_IFACE" save_config >/dev/null 2>&1 || true
+        fi
+        rollback_wifi "$prev_id" "$prev_ssid"
         return 1
     fi
 
@@ -1124,6 +1228,66 @@ check_previous_wifi() {
     return 0
 }
 
+if_previous_wifi() {
+    if [[ -s "$PREVIOUS_WIFI" ]]; then
+        echo "true"
+    elif [[ -s "$PREVIOUS_WIFI_SAVE" ]]; then
+        cp "$PREVIOUS_WIFI_SAVE" "$PREVIOUS_WIFI" 2>/dev/null || true
+        echo "true"
+    elif [[ -s "$WIFI_CFG_PATH" ]]; then
+        local cfg_ssid
+        cfg_ssid=$(grep -E '^WIFI_CFG_SSID=' "$WIFI_CFG_PATH" | cut -d= -f2-)
+        if [[ -n "$cfg_ssid" ]]; then
+            echo "$cfg_ssid" > "$PREVIOUS_WIFI" 2>/dev/null || true
+            echo "true"
+        else
+            echo "false"
+        fi
+    else
+        local WIFI_IFACE
+        WIFI_IFACE=$(get_wireless_interface)
+        if [[ -n "$WIFI_IFACE" ]] && [[ -S "/run/wpa_supplicant/$WIFI_IFACE" ]]; then
+            local count
+            count=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk 'NR>1 {print $1}' | wc -l)
+            if [[ "$count" -gt 0 ]]; then
+                echo "true"
+            else
+                echo "false"
+            fi
+        else
+            echo "false"
+        fi
+    fi
+}
+
+try_previous_wifi() {
+    local ssid=""
+    if [[ -s "$PREVIOUS_WIFI" ]]; then
+        ssid=$(<"$PREVIOUS_WIFI")
+    elif [[ -s "$PREVIOUS_WIFI_SAVE" ]]; then
+        ssid=$(<"$PREVIOUS_WIFI_SAVE")
+    elif [[ -s "$WIFI_CFG_PATH" ]]; then
+        ssid=$(grep -E '^WIFI_CFG_SSID=' "$WIFI_CFG_PATH" | cut -d= -f2-)
+    fi
+
+    if [[ -z "$ssid" ]]; then
+        local WIFI_IFACE
+        WIFI_IFACE=$(get_wireless_interface)
+        if [[ -n "$WIFI_IFACE" ]] && [[ -S "/run/wpa_supplicant/$WIFI_IFACE" ]]; then
+            local unescaped_first
+            unescaped_first=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' 'NR==2 {print $2}')
+            [[ -n "$unescaped_first" ]] && ssid=$(unescape_non_ascii "$unescaped_first")
+        fi
+    fi
+
+    if [[ -n "$ssid" ]]; then
+        debug_print "[wifi] attempting to connect to previous WiFi: $ssid"
+        connect_wifi "$ssid"
+    else
+        debug_print "[wifi] no previous WiFi to connect to"
+    fi
+}
+
 ARGS=()
 for arg in "$@"; do
     if [[ "$arg" != "-d" && "$arg" != "--debug" ]]; then
@@ -1217,62 +1381,10 @@ case "$1" in
     check_previous_wifi
     ;;
 "if_previous_wifi")
-    if [[ -s "$PREVIOUS_WIFI" ]]; then
-        echo "true"
-    elif [[ -s "$PREVIOUS_WIFI_SAVE" ]]; then
-        cp "$PREVIOUS_WIFI_SAVE" "$PREVIOUS_WIFI" 2>/dev/null || true
-        echo "true"
-    elif [[ -s "$WIFI_CFG_PATH" ]]; then
-        local cfg_ssid
-        cfg_ssid=$(grep -E '^WIFI_CFG_SSID=' "$WIFI_CFG_PATH" | cut -d= -f2-)
-        if [[ -n "$cfg_ssid" ]]; then
-            echo "$cfg_ssid" > "$PREVIOUS_WIFI" 2>/dev/null || true
-            echo "true"
-        else
-            echo "false"
-        fi
-    else
-        local WIFI_IFACE
-        WIFI_IFACE=$(get_wireless_interface)
-        if [[ -n "$WIFI_IFACE" ]] && [[ -S "/run/wpa_supplicant/$WIFI_IFACE" ]]; then
-            local count
-            count=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk 'NR>1 {print $1}' | wc -l)
-            if [[ "$count" -gt 0 ]]; then
-                echo "true"
-            else
-                echo "false"
-            fi
-        else
-            echo "false"
-        fi
-    fi
+    if_previous_wifi
     ;;
 "try_previous_wifi")
-    local ssid=""
-    if [[ -s "$PREVIOUS_WIFI" ]]; then
-        ssid=$(<"$PREVIOUS_WIFI")
-    elif [[ -s "$PREVIOUS_WIFI_SAVE" ]]; then
-        ssid=$(<"$PREVIOUS_WIFI_SAVE")
-    elif [[ -s "$WIFI_CFG_PATH" ]]; then
-        ssid=$(grep -E '^WIFI_CFG_SSID=' "$WIFI_CFG_PATH" | cut -d= -f2-)
-    fi
-
-    if [[ -z "$ssid" ]]; then
-        local WIFI_IFACE
-        WIFI_IFACE=$(get_wireless_interface)
-        if [[ -n "$WIFI_IFACE" ]] && [[ -S "/run/wpa_supplicant/$WIFI_IFACE" ]]; then
-            local unescaped_first
-            unescaped_first=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' 'NR==2 {print $2}')
-            [[ -n "$unescaped_first" ]] && ssid=$(unescape_non_ascii "$unescaped_first")
-        fi
-    fi
-
-    if [[ -n "$ssid" ]]; then
-        debug_print "[wifi] attempting to connect to previous WiFi: $ssid"
-        connect_wifi "$ssid"
-    else
-        debug_print "[wifi] no previous WiFi to connect to"
-    fi
+    try_previous_wifi
     ;;
 *)
     show_help
