@@ -133,6 +133,9 @@ update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 mkdir -p /etc/systemd/journald.conf.d
 printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' > /etc/systemd/journald.conf.d/00-volatile.conf
 
+# Delegate eth0 dynamically to ifplugd on physical cable carrier, preventing boot dhclient loops
+sed -i '/allow-hotplug eth0/d' /etc/network/interfaces 2>/dev/null || true
+
 # Clean up apt caches to save space
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/*

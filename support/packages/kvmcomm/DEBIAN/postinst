@@ -96,6 +96,14 @@ if [ -f /etc/rc.local ]; then
     sed -i '/192\.168\.100\.200/d' /etc/rc.local
 fi
 
+# Delegate eth0 dynamically to ifplugd on physical cable carrier, preventing boot dhclient loops
+if [ -f /etc/network/interfaces ]; then
+    sed -i '/allow-hotplug eth0/d' /etc/network/interfaces
+fi
+if ip link show eth0 2>/dev/null | grep -q "NO-CARRIER"; then
+    pkill -f "dhclient.*eth0" 2>/dev/null || true
+fi
+
 ldconfig
 
 mkdir -p /etc/systemd/system/multi-user.target.wants
