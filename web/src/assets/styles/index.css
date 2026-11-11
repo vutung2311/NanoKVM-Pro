@@ -2,11 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --target-size: 24px;
+  --visual-vh: 100dvh;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+@media (pointer: coarse) {
+  :root {
+    --target-size: 44px;
+  }
+}
+
 html,
 body {
   padding: 0;
   margin: 0;
   background: #000;
+  overscroll-behavior: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media (pointer: coarse) {
+  .kvm-touch-target {
+    position: relative;
+  }
+  .kvm-touch-target::after {
+    content: '';
+    position: absolute;
+    inset: -7px -2px;
+  }
 }
 
 ::-webkit-scrollbar {

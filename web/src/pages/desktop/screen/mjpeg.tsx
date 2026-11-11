@@ -4,7 +4,7 @@ import { useAtomValue } from 'jotai';
 
 import MonitorXIcon from '@/assets/images/monitor-x.svg';
 import { getBaseUrl } from '@/lib/service.ts';
-import { getVideoTransformStyle, isQuarterTurn } from '@/lib/video-transform.ts';
+import { getVideoTransformStyle } from '@/lib/video-transform.ts';
 import { mouseStyleAtom } from '@/jotai/mouse.ts';
 import { videoParametersAtom } from '@/jotai/screen.ts';
 
@@ -13,16 +13,11 @@ export const Mjpeg = () => {
   const mouseStyle = useAtomValue(mouseStyleAtom);
 
   return (
-    <div
-      className={clsx(
-        'flex h-screen w-screen justify-center',
-        isQuarterTurn(videoParameters.rotation) ? 'items-center' : 'items-start xl:items-center'
-      )}
-    >
+    <div className="flex h-full w-full items-center justify-center">
       <Image
         id="screen"
         className={clsx(
-          'block max-h-screen min-h-[50vh] min-w-[50vw] select-none object-contain',
+          'block max-h-full min-w-[50dvw] max-w-full select-none object-contain sm:min-h-[50dvh]',
           mouseStyle
         )}
         style={getVideoTransformStyle(videoParameters.scale, videoParameters.rotation)}

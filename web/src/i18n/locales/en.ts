@@ -98,7 +98,8 @@ const en = {
       noSignal: 'HDMI no signal',
       inconsistentVideoMode: 'Play paused. Another video mode is playing.',
       upload: 'Upload',
-      advanced: 'Advanced'
+      advanced: 'Advanced',
+      resetZoom: 'Reset zoom'
     },
     volume: {
       title: 'Volume'
@@ -118,6 +119,7 @@ const en = {
       placeholder: 'Please input',
       submit: 'Submit',
       virtual: 'Keyboard',
+      mobileType: 'Open phone keyboard',
       shortcut: {
         title: 'Shortcuts',
         custom: 'Custom',
@@ -177,6 +179,17 @@ const en = {
       slow: 'Slow',
       requestPointer: 'Using relative mode. Please click desktop to get mouse pointer.',
       resetHid: 'Reset HID',
+      touchControl: 'Touch control',
+      trackpad: 'Trackpad mode',
+      directTouch: 'Direct touch',
+      trackpadShort: 'Pad',
+      touchShort: 'Touch',
+      floatingButtons: 'On-screen mouse buttons',
+      leftBtn: 'Left',
+      midBtn: 'Mid',
+      rightBtn: 'Right',
+      drag: 'Drag',
+      dragLock: 'Drag Lock',
       hidOnly: {
         title: 'HID-Only mode',
         desc: "If your mouse and keyboard stop responding and resetting HID doesn't help, it could be a compatibility issue between the NanoKVM and the device. Try to enable HID-Only mode for better compatibility.",

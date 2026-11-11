@@ -26,23 +26,28 @@ export function useMenuBounds(
     if (!nodeRef.current) return;
 
     const elementRect = nodeRef.current.getBoundingClientRect();
-    const width = (window.innerWidth - elementRect.width) / 2;
+    const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const width = Math.max(0, (viewportWidth - elementRect.width) / 2);
 
     setMenuBounds({
       left: -width,
       top: -10,
       right: width,
-      bottom: window.innerHeight - elementRect.height - 10
+      bottom: Math.max(0, viewportHeight - elementRect.height - 10)
     });
   }, [nodeRef]);
 
   // Update bounds on mount and resize
   useEffect(() => {
+    const vv = window.visualViewport;
     handleResize();
     window.addEventListener('resize', handleResize);
+    vv?.addEventListener('resize', handleResize);
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      vv?.removeEventListener('resize', handleResize);
     };
   }, [handleResize]);
 

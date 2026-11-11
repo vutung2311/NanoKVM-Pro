@@ -54,12 +54,12 @@ export const H265Direct = () => {
   }, []);
 
   return (
-    <div className="flex h-screen w-screen items-start justify-center xl:items-center">
+    <div className="flex h-full w-full items-center justify-center">
       <canvas
         id="screen"
         ref={canvasRef}
         className={clsx(
-          'block min-h-[50vh] min-w-[50vw] max-w-full select-none object-scale-down',
+          'block max-h-full min-w-[50dvw] max-w-full select-none object-scale-down sm:min-h-[50dvh]',
           mouseStyle
         )}
         style={{ transform: `scale(${videoParameters.scale})` }}

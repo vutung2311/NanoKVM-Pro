@@ -1,10 +1,11 @@
 import { ReactNode, useState } from 'react';
-import { Popover, Tooltip } from 'antd';
+import { Button, Popover, Tooltip } from 'antd';
 import clsx from 'clsx';
 import { useSetAtom } from 'jotai';
 import { useMediaQuery } from 'react-responsive';
 
 import { submenuOpenCountAtom } from '@/jotai/settings.ts';
+import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 
 type MenuItemProps = {
   title: string;
@@ -24,6 +25,7 @@ export const MenuItem = ({
   onOpenChange
 }: MenuItemProps) => {
   const isBigScreen = useMediaQuery({ minWidth: 640 });
+  const isTouchDevice = useTouchDevice();
   const setSubmenuOpenCount = useSetAtom(submenuOpenCountAtom);
 
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
@@ -42,11 +44,24 @@ export const MenuItem = ({
   }
 
   function toggleTooltip(open: boolean) {
-    if (isPopoverOpen) {
+    if (isTouchDevice || isPopoverOpen) {
       return;
     }
     setIsTooltipOpen(open);
   }
+
+  const triggerButton = (
+    <Button
+      type="text"
+      size="small"
+      aria-label={title}
+      icon={icon}
+      className={clsx(
+        'kvm-touch-target flex h-[30px] w-[30px] shrink-0 items-center justify-center p-0 text-neutral-300 hover:text-white',
+        className
+      )}
+    />
+  );
 
   return (
     <Popover
@@ -55,26 +70,24 @@ export const MenuItem = ({
       trigger="click"
       zIndex={900}
       placement={isBigScreen ? 'bottomLeft' : 'bottom'}
+      overlayStyle={{ maxWidth: 'calc(100dvw - 16px)' }}
       open={isPopoverOpen}
       onOpenChange={togglePopover}
       fresh={!!fresh}
     >
-      <Tooltip
-        title={title}
-        mouseEnterDelay={0.6}
-        placement="bottom"
-        open={isTooltipOpen}
-        onOpenChange={toggleTooltip}
-      >
-        <div
-          className={clsx(
-            'flex h-[30px] w-[30px] cursor-pointer items-center justify-center rounded text-neutral-300 hover:bg-neutral-700/80 hover:text-white',
-            className
-          )}
+      {isTouchDevice ? (
+        triggerButton
+      ) : (
+        <Tooltip
+          title={title}
+          mouseEnterDelay={0.6}
+          placement="bottom"
+          open={isTooltipOpen}
+          onOpenChange={toggleTooltip}
         >
-          {icon}
-        </div>
-      </Tooltip>
+          {triggerButton}
+        </Tooltip>
+      )}
     </Popover>
   );
 };

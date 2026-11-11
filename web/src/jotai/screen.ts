@@ -16,4 +16,17 @@ export const videoParametersAtom = atom<VideoParameters>({
 
 export const videoStatusAtom = atom<VideoStatus>(VideoStatus.Normal);
 
+export interface ViewportZoomState {
+  scale: number;
+  x: number;
+  y: number;
+}
+
 export const videoVolumeAtom = atom(0);
+
+// client-side pinch-to-zoom & pan state on touch devices
+export const viewportZoomAtom = atom<ViewportZoomState>({
+  scale: 1,
+  x: 0,
+  y: 0
+});

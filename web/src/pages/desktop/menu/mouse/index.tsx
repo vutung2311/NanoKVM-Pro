@@ -9,8 +9,11 @@ import {
   mouseModeAtom,
   mouseStyleAtom,
   scrollDirectionAtom,
-  scrollIntervalAtom
+  scrollIntervalAtom,
+  showMobileMouseButtonsAtom,
+  touchModeAtom
 } from '@/jotai/mouse';
+import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 import { MenuItem } from '@/components/menu-item.tsx';
 
 import { Cursor } from './cursor.tsx';
@@ -19,14 +22,18 @@ import { HidMode } from './hid-mode.tsx';
 import { MouseMode } from './mouse-mode.tsx';
 import { ResetHid } from './reset-hid.tsx';
 import { Speed } from './speed.tsx';
+import { TouchMode } from './touch-mode.tsx';
 
 export const Mouse = () => {
   const { t } = useTranslation();
+  const isTouchDevice = useTouchDevice();
 
   const setMouseStyle = useSetAtom(mouseStyleAtom);
   const setMouseMode = useSetAtom(mouseModeAtom);
   const setScrollDirection = useSetAtom(scrollDirectionAtom);
   const setScrollInterval = useSetAtom(scrollIntervalAtom);
+  const setTouchMode = useSetAtom(touchModeAtom);
+  const setShowMobileButtons = useSetAtom(showMobileMouseButtonsAtom);
 
   useEffect(() => {
     const mouseStyle = ls.getMouseStyle();
@@ -48,11 +55,28 @@ export const Mouse = () => {
     if (interval) {
       setScrollInterval(interval);
     }
-  }, []);
+
+    setTouchMode(ls.getTouchMode());
+    setShowMobileButtons(ls.getMobileMouseButtons());
+  }, [
+    setMouseMode,
+    setMouseStyle,
+    setScrollDirection,
+    setScrollInterval,
+    setShowMobileButtons,
+    setTouchMode
+  ]);
 
   const content = (
     <div className="flex flex-col space-y-1">
-      <Cursor />
+      {isTouchDevice && (
+        <>
+          <TouchMode />
+          <Divider style={{ margin: '8px 0' }} />
+        </>
+      )}
+
+      {!isTouchDevice && <Cursor />}
       <MouseMode />
       <Direction />
       <Speed />

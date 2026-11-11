@@ -5,7 +5,7 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 
 import * as api from '@/api/stream.ts';
 import { VideoStatus } from '@/types';
-import { getVideoRotationStyle, getVideoSizeStyle, isQuarterTurn } from '@/lib/video-transform.ts';
+import { getVideoRotationStyle, getVideoSizeStyle } from '@/lib/video-transform.ts';
 import { microphoneEnabledAtom } from '@/jotai/audio.ts';
 import { mouseStyleAtom } from '@/jotai/mouse.ts';
 import { videoParametersAtom, videoStatusAtom, videoVolumeAtom } from '@/jotai/screen.ts';
@@ -387,10 +387,8 @@ export const H264Webrtc = () => {
   return (
     <Spin size="large" tip="Loading" spinning={isLoading}>
       <div
-        className={clsx(
-          'flex h-screen w-screen justify-center',
-          isQuarterTurn(videoParameters.rotation) ? 'items-center' : 'items-start xl:items-center'
-        )}
+        className="flex w-dvw items-center justify-center"
+        style={{ height: 'var(--visual-vh, 100dvh)' }}
       >
         {/* Keep transforms off the hardware-decoded video layer to avoid blank quarter turns. */}
         <div
@@ -401,7 +399,7 @@ export const H264Webrtc = () => {
             id="screen"
             ref={videoRef}
             className={clsx(
-              'block max-h-full min-h-[50vh] min-w-[50vw] max-w-full select-none object-contain',
+              'block max-h-full min-w-[50dvw] max-w-full select-none object-contain sm:min-h-[50dvh]',
               isPlaying ? 'opacity-100' : 'opacity-0',
               mouseStyle
             )}

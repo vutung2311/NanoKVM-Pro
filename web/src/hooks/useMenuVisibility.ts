@@ -3,6 +3,7 @@ import { useAtom, useAtomValue } from 'jotai';
 
 import { getMenuDisplayMode } from '@/lib/localstorage.ts';
 import { menuDisplayModeAtom, submenuOpenCountAtom } from '@/jotai/settings.ts';
+import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 
 const HIDE_TIMEOUT = 5000;
 
@@ -16,6 +17,7 @@ export interface MenuVisibilityState {
 }
 
 export function useMenuVisibility(): MenuVisibilityState {
+  const isTouchDevice = useTouchDevice();
   const [menuDisplayMode, setMenuDisplayMode] = useAtom(menuDisplayModeAtom);
   const submenuOpenCount = useAtomValue(submenuOpenCountAtom);
 
@@ -27,7 +29,14 @@ export function useMenuVisibility(): MenuVisibilityState {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const startCountdown = useCallback(() => {
-    if (menuDisplayMode !== 'auto' || submenuOpenCount > 0 || !isMenuExpanded || isMenuMoved) {
+    // Touch screens have no hover pointer to unhide an off-screen bar; keep visible until collapsed.
+    if (
+      isTouchDevice ||
+      menuDisplayMode !== 'auto' ||
+      submenuOpenCount > 0 ||
+      !isMenuExpanded ||
+      isMenuMoved
+    ) {
       return;
     }
 
@@ -38,7 +47,7 @@ export function useMenuVisibility(): MenuVisibilityState {
     timerRef.current = setTimeout(() => {
       setIsMenuHidden(true);
     }, HIDE_TIMEOUT);
-  }, [menuDisplayMode, submenuOpenCount, isMenuExpanded, isMenuMoved]);
+  }, [isTouchDevice, menuDisplayMode, submenuOpenCount, isMenuExpanded, isMenuMoved]);
 
   const stopCountdown = useCallback(() => {
     if (timerRef.current) {

@@ -8,11 +8,13 @@ import * as storage from '@/lib/localstorage.ts';
 import { getSupportedVideoModes } from '@/lib/video.ts';
 import { client } from '@/lib/websocket.ts';
 import { videoModeAtom } from '@/jotai/screen.ts';
+import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 import { Head } from '@/components/head.tsx';
 
 import { Keyboard } from './keyboard';
 import { Menu } from './menu';
 import { Message } from './message.tsx';
+import { MobileKeyboard } from './mobile-keyboard';
 import { Mouse } from './mouse';
 import { initializeMouseInputLifecycle, releaseMouseInput } from './mouse/lifecycle.ts';
 import { Notification } from './notification.tsx';
@@ -22,6 +24,7 @@ import { VirtualKeyboard } from './virtual-keyboard';
 export const Desktop = () => {
   const { t } = useTranslation();
   const isBigScreen = useMediaQuery({ minWidth: 850 });
+  const isTouchDevice = useTouchDevice();
 
   const [videoMode, setVideoMode] = useAtom(videoModeAtom);
 
@@ -39,7 +42,7 @@ export const Desktop = () => {
       disposeMouseInputLifecycle();
       client.close();
     };
-  }, []);
+  }, [setVideoMode]);
 
   function getVideoMode() {
     const supportedModes = getSupportedVideoModes();
@@ -56,12 +59,8 @@ export const Desktop = () => {
     <>
       <Head title={t('head.desktop')} />
 
-      {isBigScreen && (
-        <>
-          <Message />
-          <Notification />
-        </>
-      )}
+      <Message />
+      {isBigScreen && <Notification />}
 
       {videoMode && (
         <>
@@ -72,7 +71,8 @@ export const Desktop = () => {
         </>
       )}
 
-      <VirtualKeyboard />
+      <MobileKeyboard />
+      {!isTouchDevice && <VirtualKeyboard />}
     </>
   );
 };
