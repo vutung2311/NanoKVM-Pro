@@ -11,3 +11,6 @@ export const leaderKeyAtom = atom('');
 
 // is caps lock active
 export const isCapsLockActiveAtom = atom(false);
+
+// is the mobile native OS keyboard active
+export const isMobileKeyboardOpenAtom = atom(false);

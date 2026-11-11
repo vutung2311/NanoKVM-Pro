@@ -369,12 +369,15 @@ export const H265Webrtc = () => {
 
   return (
     <Spin size="large" tip="Loading" spinning={isLoading}>
-      <div className="flex h-screen w-screen items-start justify-center xl:items-center">
+      <div
+        className="flex w-dvw items-center justify-center"
+        style={{ height: 'var(--visual-vh, 100dvh)' }}
+      >
         <video
           id="screen"
           ref={videoRef}
           className={clsx(
-            'block max-h-full min-h-[50vh] min-w-[50vw] max-w-full select-none object-scale-down',
+            'block max-h-full min-w-[50dvw] max-w-full select-none object-scale-down sm:min-h-[50dvh]',
             mouseStyle
           )}
           style={{ transform: `scale(${videoParameters.scale})` }}

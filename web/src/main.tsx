@@ -47,8 +47,8 @@ const renderApp = () => {
 };
 
 if (import.meta.env.MODE === 'mocked') {
-  const { worker } = await import('./mocks/browser');
-  await worker.start();
+  const { startMocks } = await import('./mocks/browser');
+  await startMocks();
 }
 
 renderApp();

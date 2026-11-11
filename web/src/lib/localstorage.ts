@@ -13,6 +13,8 @@ const SKIP_BROWSER_NOTIFICATION_KEY = 'nano-kvm-skip-browser-notification';
 const MENU_DISABLED_ITEMS_KEY = 'nano-kvm-menu-disabled-items';
 const MENU_AUTO_HIDE_KEY = 'nano-kvm-menu-auto-hide';
 const POWER_CONFIRM_KEY = 'nano-kvm-power-confirm';
+const TOUCH_MODE_KEY = 'nano-kvm-touch-mode';
+const MOBILE_MOUSE_BUTTONS_KEY = 'nano-kvm-mobile-mouse-buttons';
 
 type ItemWithExpiry = {
   value: string;
@@ -173,4 +175,21 @@ export function getPowerConfirm() {
 
 export function setPowerConfirm(enabled: boolean) {
   localStorage.setItem(POWER_CONFIRM_KEY, String(enabled));
+}
+
+export function getTouchMode(): 'trackpad' | 'direct' {
+  const mode = localStorage.getItem(TOUCH_MODE_KEY);
+  return mode === 'direct' ? 'direct' : 'trackpad';
+}
+
+export function setTouchMode(mode: 'trackpad' | 'direct') {
+  localStorage.setItem(TOUCH_MODE_KEY, mode);
+}
+
+export function getMobileMouseButtons(): boolean {
+  return localStorage.getItem(MOBILE_MOUSE_BUTTONS_KEY) === 'true';
+}
+
+export function setMobileMouseButtons(enabled: boolean) {
+  localStorage.setItem(MOBILE_MOUSE_BUTTONS_KEY, String(enabled));
 }

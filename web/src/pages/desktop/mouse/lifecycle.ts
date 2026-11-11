@@ -5,9 +5,11 @@ import { client, MessageEvent } from '@/lib/websocket.ts';
  * Reports queued here outlive an Absolute/Relative component unmount.
  */
 type ReleaseHandler = () => void;
+type ButtonActionHandler = (type: 'mousedown' | 'mouseup', button: number) => void;
 export type MouseInterface = 'absolute' | 'relative';
 
 let releaseHandler: ReleaseHandler | null = null;
+let buttonActionHandler: ButtonActionHandler | null = null;
 // Each HID interface needs its own neutral report because report length selects hidg1/hidg2.
 const pendingReleases = new Map<MouseInterface, Uint8Array>();
 
@@ -77,4 +79,18 @@ export function registerMouseReleaseHandler(handler: ReleaseHandler): () => void
 
 export function releaseMouseInput(): void {
   releaseHandler?.();
+}
+
+export function registerMouseButtonHandler(handler: ButtonActionHandler): () => void {
+  buttonActionHandler = handler;
+
+  return () => {
+    if (buttonActionHandler === handler) {
+      buttonActionHandler = null;
+    }
+  };
+}
+
+export function triggerMouseButtonAction(type: 'mousedown' | 'mouseup', button: number): void {
+  buttonActionHandler?.(type, button);
 }

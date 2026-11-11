@@ -130,6 +130,9 @@ update() {
     if [ -d overlay/boot ]; then
         cp -r overlay/boot/* /boot 2>/dev/null || true
     fi
+    if [ -d overlay/kvmapp/server/web/assets ]; then
+        rm -rf /kvmapp/server/web/assets
+    fi
     rsync -a --exclude='/boot' overlay/ /
 
     touch /var/run/reboot-required

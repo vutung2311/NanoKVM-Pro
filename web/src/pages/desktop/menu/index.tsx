@@ -1,15 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
-import { Divider } from 'antd';
+import { Button, Divider } from 'antd';
 import clsx from 'clsx';
-import { useAtomValue, useSetAtom } from 'jotai';
-import { GripVerticalIcon } from 'lucide-react';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import {
+  GripVerticalIcon,
+  HandIcon,
+  KeyboardIcon,
+  MousePointerClickIcon,
+  TouchpadIcon
+} from 'lucide-react';
 import Draggable, { DraggableData, DraggableEvent } from 'react-draggable';
+import { useTranslation } from 'react-i18next';
 
 import * as api from '@/api/vm.ts';
 import * as storage from '@/lib/localstorage.ts';
+import { toggleMobileKeyboard } from '@/lib/mobile-keyboard-focus.ts';
+import { isMobileKeyboardOpenAtom } from '@/jotai/keyboard.ts';
+import {
+  showMobileMouseButtonsAtom,
+  touchModeAtom,
+  virtualCursorAtom
+} from '@/jotai/mouse.ts';
+import { viewportZoomAtom } from '@/jotai/screen.ts';
 import { menuDisabledItemsAtom } from '@/jotai/settings.ts';
 import { useMenuBounds } from '@/hooks/useMenuBounds.ts';
 import { useMenuVisibility } from '@/hooks/useMenuVisibility.ts';
+import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 
 import { AIAssistant } from './assistant';
 import { Fullscreen } from './fullscreen';
@@ -27,10 +43,18 @@ import { Volume } from './volume';
 import { Wol } from './wol';
 
 export const Menu = () => {
+  const { t } = useTranslation();
+  const isTouchDevice = useTouchDevice();
   const nodeRef = useRef<HTMLDivElement | null>(null);
 
   const menuDisabledItems = useAtomValue(menuDisabledItemsAtom);
   const setMenuDisabledItems = useSetAtom(menuDisabledItemsAtom);
+
+  const isMobileKeyboardOpen = useAtomValue(isMobileKeyboardOpenAtom);
+  const [touchMode, setTouchMode] = useAtom(touchModeAtom);
+  const [showMouseButtons, setShowMouseButtons] = useAtom(showMobileMouseButtonsAtom);
+  const [zoom, setZoom] = useAtom(viewportZoomAtom);
+  const setVirtualCursor = useSetAtom(virtualCursorAtom);
 
   const [isInitialized, setIsInitialized] = useState(false);
 
@@ -65,6 +89,28 @@ export const Menu = () => {
   function isEnabled(item: string) {
     return !menuDisabledItems.includes(item);
   }
+
+  function flipTouchMode() {
+    const next = touchMode === 'trackpad' ? 'direct' : 'trackpad';
+    setTouchMode(next);
+    storage.setTouchMode(next);
+    if (next === 'direct') {
+      setVirtualCursor((prev) => ({ ...prev, visible: false }));
+    }
+  }
+
+  function flipMouseButtons() {
+    const next = !showMouseButtons;
+    setShowMouseButtons(next);
+    storage.setMobileMouseButtons(next);
+  }
+
+  function resetZoom() {
+    setZoom({ scale: 1, x: 0, y: 0 });
+  }
+
+  const isZoomed = zoom.scale > 1.02;
+
   return (
     <Draggable
       nodeRef={nodeRef}
@@ -76,63 +122,153 @@ export const Menu = () => {
       <div
         ref={nodeRef}
         className={clsx(
-          'fixed left-1/2 top-[10px] z-[1000] -translate-x-1/2 transition-opacity duration-300',
+          'fixed left-1/2 z-[1000] max-w-[calc(100dvw-12px)] -translate-x-1/2 transition-opacity duration-300',
           isInitialized ? 'opacity-100' : 'opacity-0'
         )}
+        style={{
+          top: 'max(10px, calc(var(--safe-top) + 6px))'
+        }}
         onMouseEnter={() => handleHovered(true)}
         onMouseLeave={() => handleHovered(false)}
         onBlur={() => handleHovered(false)}
       >
-        {/* Trigger area for auto-show when hidden */}
-        {isMenuExpanded && (
+        {/* Trigger area for auto-show when hidden on desktop */}
+        {isMenuExpanded && !isTouchDevice && (
           <div className="absolute -top-[10px] left-0 right-0 h-[46px] w-full bg-transparent" />
         )}
 
         {/* Menubar */}
-        <div className="sticky top-[10px] flex w-full justify-center">
+        <div className="flex w-full justify-center">
           <div
             className={clsx(
-              'h-[36px] items-center rounded bg-neutral-800/80 pl-1 pr-2 transition-all duration-300',
+              'max-w-[calc(100dvw-12px)] items-center rounded bg-neutral-800/80 pl-1 pr-1.5 backdrop-blur-sm transition-all duration-300',
+              isTouchDevice ? 'h-[38px]' : 'h-[36px]',
               isMenuExpanded ? 'flex' : 'hidden',
               isMenuHidden ? '-translate-y-[110%] opacity-80' : 'translate-y-0 opacity-100'
             )}
           >
-            <strong>
-              <div className="flex h-[30px] cursor-move select-none items-center justify-center pl-1 text-neutral-500">
-                <GripVerticalIcon size={18} />
+            <strong className="shrink-0">
+              <div className="kvm-touch-target flex h-[30px] cursor-move select-none items-center justify-center pl-1 text-neutral-500">
+                <GripVerticalIcon size={18} aria-hidden="true" />
               </div>
             </strong>
-            <Divider type="vertical" />
+            <Divider type="vertical" className="shrink-0" />
 
-            <Screen />
-            {isEnabled('volume') && <Volume />}
-            {isEnabled('microphone') && <Microphone />}
-            {['volume', 'microphone'].some(isEnabled) && <Divider type="vertical" />}
-
-            <Keyboard />
-            <Mouse />
-            <Divider type="vertical" />
-
-            {isEnabled('image') && <Image />}
-            {isEnabled('script') && <Script />}
-            {isEnabled('assistant') && <AIAssistant />}
-            {isEnabled('terminal') && <Terminal />}
-            {isEnabled('wol') && <Wol />}
-
-            {['image', 'script', 'assistant', 'terminal', 'wol'].some(isEnabled) && (
-              <Divider type="vertical" />
-            )}
-
-            {isEnabled('power') && (
+            {/* Mobile-first one-tap controls using Ant Design Button */}
+            {isTouchDevice && (
               <>
-                <Power />
-                <Divider type="vertical" />
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    size="small"
+                    color={isMobileKeyboardOpen ? 'primary' : 'default'}
+                    variant={isMobileKeyboardOpen ? 'filled' : 'text'}
+                    aria-label={t('keyboard.mobileType', { defaultValue: 'Open phone keyboard' })}
+                    aria-pressed={isMobileKeyboardOpen}
+                    icon={<KeyboardIcon size={18} aria-hidden="true" />}
+                    onMouseDown={(e) => {
+                      if (isMobileKeyboardOpen) {
+                        e.preventDefault();
+                      }
+                    }}
+                    onClick={() => toggleMobileKeyboard()}
+                    className={clsx(
+                      'kvm-touch-target flex h-[30px] w-[30px] shrink-0 items-center justify-center p-0',
+                      !isMobileKeyboardOpen && 'text-neutral-300 hover:text-white'
+                    )}
+                  />
+
+                  <Button
+                    size="small"
+                    color={touchMode === 'trackpad' ? 'primary' : 'gold'}
+                    variant="text"
+                    aria-label={
+                      touchMode === 'trackpad'
+                        ? t('mouse.trackpad', { defaultValue: 'Trackpad mode' })
+                        : t('mouse.directTouch', { defaultValue: 'Direct touch' })
+                    }
+                    icon={
+                      touchMode === 'trackpad' ? (
+                        <TouchpadIcon size={18} aria-hidden="true" />
+                      ) : (
+                        <HandIcon size={18} aria-hidden="true" />
+                      )
+                    }
+                    onClick={flipTouchMode}
+                    className="kvm-touch-target flex h-[30px] w-[30px] shrink-0 items-center justify-center p-0"
+                  />
+
+                  <Button
+                    size="small"
+                    color={showMouseButtons ? 'primary' : 'default'}
+                    variant={showMouseButtons ? 'filled' : 'text'}
+                    aria-label={t('mouse.floatingButtons', {
+                      defaultValue: 'On-screen mouse buttons'
+                    })}
+                    aria-pressed={showMouseButtons}
+                    icon={<MousePointerClickIcon size={18} aria-hidden="true" />}
+                    onClick={flipMouseButtons}
+                    className={clsx(
+                      'kvm-touch-target flex h-[30px] w-[30px] shrink-0 items-center justify-center p-0',
+                      !showMouseButtons && 'text-neutral-300 hover:text-white'
+                    )}
+                  />
+
+                  {isZoomed && (
+                    <Button
+                      size="small"
+                      color="primary"
+                      variant="filled"
+                      aria-label={t('screen.resetZoom', { defaultValue: 'Reset zoom' })}
+                      onClick={resetZoom}
+                      className="kvm-touch-target ml-1.5 flex h-[26px] shrink-0 items-center justify-center px-2 text-[11px] font-medium"
+                    >
+                      {zoom.scale.toFixed(1)}×
+                    </Button>
+                  )}
+                </div>
+
+                <Divider type="vertical" className="shrink-0" />
               </>
             )}
 
-            <Settings />
-            {isEnabled('fullscreen') && <Fullscreen />}
-            {isEnabled('collapse') && <Collapse toggleMenu={setIsMenuExpanded} />}
+            {/* Scrollable feature tray so narrow phone viewports never clip right-side controls */}
+            <div className="no-scrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto">
+              <Screen />
+              {isEnabled('volume') && <Volume />}
+              {isEnabled('microphone') && <Microphone />}
+              {['volume', 'microphone'].some(isEnabled) && <Divider type="vertical" />}
+
+              <Keyboard />
+              <Mouse />
+              <Divider type="vertical" />
+
+              {isEnabled('image') && <Image />}
+              {isEnabled('script') && <Script />}
+              {isEnabled('assistant') && <AIAssistant />}
+              {isEnabled('terminal') && <Terminal />}
+              {isEnabled('wol') && <Wol />}
+
+              {['image', 'script', 'assistant', 'terminal', 'wol'].some(isEnabled) && (
+                <Divider type="vertical" />
+              )}
+
+              {isEnabled('power') && (
+                <>
+                  <Power />
+                  <Divider type="vertical" />
+                </>
+              )}
+
+              <Settings />
+              {isEnabled('fullscreen') && <Fullscreen />}
+            </div>
+
+            {isEnabled('collapse') && (
+              <>
+                <Divider type="vertical" className="shrink-0" />
+                <Collapse toggleMenu={setIsMenuExpanded} />
+              </>
+            )}
           </div>
         </div>
 

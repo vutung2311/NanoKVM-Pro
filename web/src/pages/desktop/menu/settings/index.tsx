@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Badge, Modal, Tooltip } from 'antd';
+import { Badge, Button, Modal, Tooltip } from 'antd';
 import clsx from 'clsx';
 import { useAtom, useSetAtom } from 'jotai';
 import {
@@ -20,6 +20,7 @@ import { isKeyboardEnableAtom } from '@/jotai/keyboard.ts';
 import { isSettingsOpenAtom, settingTabAtom, submenuOpenCountAtom } from '@/jotai/settings.ts';
 import { Tailscale as TailscaleIcon } from '@/components/icons/tailscale';
 import { ScrollArea } from '@/components/ui/scroll-area.tsx';
+import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 
 import { About } from './about';
 import { Account } from './account';
@@ -31,6 +32,7 @@ import { Update } from './update';
 
 export const Settings = () => {
   const { t } = useTranslation();
+  const isTouchDevice = useTouchDevice();
 
   const [isSettingsOpen, setIsSettingsOpen] = useAtom(isSettingsOpenAtom);
   const [settingTab, setSettingTab] = useAtom(settingTabAtom);
@@ -64,6 +66,7 @@ export const Settings = () => {
     if (!skip) {
       checkForUpdates();
     }
+    return () => {};
   }, []);
 
   function checkForUpdates() {
@@ -108,24 +111,35 @@ export const Settings = () => {
     setSubmenuOpenCount((count) => Math.max(0, count - 1));
   }
 
+  const triggerButton = (
+    <Button
+      type="text"
+      size="small"
+      aria-label={t('settings.title')}
+      className="kvm-touch-target flex h-[30px] w-[30px] shrink-0 items-center justify-center p-0"
+      onClick={openModal}
+    >
+      <Badge dot={isUpdateAvailable} color="blue" offset={[0, 2]}>
+        <div className="pt-[3px] text-neutral-300 hover:text-white">
+          <SettingsIcon size={18} aria-hidden="true" />
+        </div>
+      </Badge>
+    </Button>
+  );
+
   return (
     <>
-      <Tooltip title={t('settings.title')} placement="bottom" mouseEnterDelay={0.6}>
-        <div
-          className="flex h-[30px] w-[30px] cursor-pointer items-center justify-center rounded hover:bg-neutral-700/80"
-          onClick={openModal}
-        >
-          <Badge dot={isUpdateAvailable} color="blue" offset={[0, 2]}>
-            <div className="pt-[3px] text-neutral-300 hover:text-white">
-              <SettingsIcon size={18} />
-            </div>
-          </Badge>
-        </div>
-      </Tooltip>
+      {isTouchDevice ? (
+        triggerButton
+      ) : (
+        <Tooltip title={t('settings.title')} placement="bottom" mouseEnterDelay={0.6}>
+          {triggerButton}
+        </Tooltip>
+      )}
 
       <Modal
         open={isSettingsOpen}
-        width={'80%'}
+        width={'94%'}
         centered={true}
         footer={null}
         destroyOnHidden={true}
@@ -133,29 +147,29 @@ export const Settings = () => {
         style={{ maxWidth: '1080px' }}
         styles={{ content: { padding: 0 } }}
       >
-        <div className="flex h-[80vh] max-h-[700px] rounded-lg outline outline-1 outline-neutral-700">
-          <div className="flex h-full max-w-[260px] flex-col space-y-0.5 rounded-l-lg bg-neutral-800 px-1 sm:w-1/5 md:w-1/4 md:px-2">
+        <div className="flex h-[85dvh] max-h-[700px] flex-col rounded-lg outline outline-1 outline-neutral-700 sm:h-[80dvh] sm:flex-row">
+          <div className="no-scrollbar flex shrink-0 flex-row items-center gap-1 overflow-x-auto rounded-t-lg border-b border-neutral-700/70 bg-neutral-800 px-2 py-2 pr-10 sm:h-full sm:w-1/5 sm:max-w-[260px] sm:flex-col sm:items-stretch sm:space-y-0.5 sm:overflow-visible sm:rounded-l-lg sm:rounded-tr-none sm:border-b-0 sm:px-1 sm:py-0 md:w-1/4 md:px-2">
             <div className="hidden px-3 pt-10 text-xl sm:block">{t('settings.title')}</div>
-            <div className="h-10 sm:h-5" />
+            <div className="hidden sm:block sm:h-5" />
             {tabs.map((tab) => (
               <div
                 key={tab.id}
                 className={clsx(
-                  'flex cursor-pointer select-none items-center space-x-2 rounded-lg p-2 sm:px-3',
-                  tab.id === settingTab ? 'bg-neutral-700/70' : 'hover:bg-neutral-700'
+                  'flex shrink-0 cursor-pointer select-none items-center space-x-2 rounded-lg px-2.5 py-2 sm:px-3',
+                  tab.id === settingTab ? 'bg-neutral-700/80 text-white' : 'hover:bg-neutral-700'
                 )}
                 onClick={() => changeTab(tab.id)}
               >
-                <div className="h-[16px] w-[16px]">{tab.icon}</div>
+                <div className="h-[16px] w-[16px] shrink-0">{tab.icon}</div>
 
                 {isUpdateAvailable && tab.id === 'update' ? (
                   <Badge dot color="blue" offset={[6, 3]}>
-                    <span className="hidden truncate text-sm sm:block">
+                    <span className="truncate text-xs sm:text-sm">
                       {t(`settings.${tab.id}.title`)}
                     </span>
                   </Badge>
                 ) : (
-                  <span className="hidden truncate text-sm sm:block">
+                  <span className="truncate text-xs sm:text-sm">
                     {t(`settings.${tab.id}.title`)}
                   </span>
                 )}
@@ -163,9 +177,9 @@ export const Settings = () => {
             ))}
           </div>
 
-          <ScrollArea className="h-full w-full rounded-r-lg bg-neutral-900/50 px-3 md:px-5">
+          <ScrollArea className="min-h-0 flex-1 rounded-b-lg bg-neutral-900/50 px-3 sm:h-full sm:w-full sm:rounded-bl-none sm:rounded-r-lg md:px-5">
             <div className="flex h-full w-full justify-center">
-              <div className="w-full max-w-[600px] pb-10 pt-14">
+              <div className="w-full max-w-[600px] pb-10 pt-6 sm:pt-14">
                 <>{tabs.find((tab) => tab.id === settingTab)?.component}</>
               </div>
             </div>

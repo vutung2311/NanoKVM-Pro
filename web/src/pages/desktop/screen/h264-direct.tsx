@@ -3,7 +3,7 @@ import clsx from 'clsx';
 import { useAtomValue } from 'jotai';
 
 import * as api from '@/api/stream.ts';
-import { getVideoTransformStyle, isQuarterTurn } from '@/lib/video-transform.ts';
+import { getVideoTransformStyle } from '@/lib/video-transform.ts';
 import { mouseStyleAtom } from '@/jotai/mouse';
 import { videoParametersAtom } from '@/jotai/screen.ts';
 
@@ -55,17 +55,12 @@ export const H264Direct = () => {
   }, []);
 
   return (
-    <div
-      className={clsx(
-        'flex h-screen w-screen justify-center',
-        isQuarterTurn(videoParameters.rotation) ? 'items-center' : 'items-start xl:items-center'
-      )}
-    >
+    <div className="flex h-full w-full items-center justify-center">
       <canvas
         id="screen"
         ref={canvasRef}
         className={clsx(
-          'block min-h-[50vh] min-w-[50vw] max-w-full select-none object-contain',
+          'block max-h-full min-w-[50dvw] max-w-full select-none object-contain sm:min-h-[50dvh]',
           mouseStyle
         )}
         style={getVideoTransformStyle(videoParameters.scale, videoParameters.rotation)}

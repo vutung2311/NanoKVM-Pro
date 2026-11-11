@@ -92,17 +92,52 @@ with zipfile.ZipFile('${BASE_AXP}') as z:
         exit 1
     fi
 
-    # 2. Stage Version Metadata
-    echo -e "${CYAN}[+] Staging boot version metadata...${RESET}"
-    mkdir -p "${stage_dir}/overlay/boot" "${stage_dir}/overlay/kvmcomm/scripts"
+    # 2. Stage Version Metadata, KVMComm Scripts & NanoKVM Application (Server + Web UI)
+    echo -e "${CYAN}[+] Staging boot version metadata & application payload...${RESET}"
+    mkdir -p "${stage_dir}/overlay/boot" \
+             "${stage_dir}/overlay/kvmcomm/scripts" \
+             "${stage_dir}/overlay/kvmapp/server/web" \
+             "${stage_dir}/overlay/kvmapp/scripts"
     # Note: Do NOT copy support/blobs/bootfs here. Factory bootfs blobs contain
     # first_time_boot, check_resize2fs, and stock configs which clobber live user
     # WiFi/network configs and trigger destructive first-boot initialization.
     echo "nanokvm-pro-${build_date}-v${VERSION}" > "${stage_dir}/overlay/boot/ver"
+    echo "${VERSION}" > "${stage_dir}/overlay/kvmapp/version"
+
+    # Ensure NanoKVM-Server and Web UI dist are built before staging
+    if [[ ! -f "${REPO_ROOT}/server/NanoKVM-Server" || ! -f "${REPO_ROOT}/web/dist/index.html" ]]; then
+        echo -e "${YELLOW}[!] Application artifacts missing; running 'make build' first...${RESET}"
+        make -C "${REPO_ROOT}" build
+    fi
+
+    echo -e "${CYAN}[+] Staging NanoKVM-Server & Web UI into overlay/kvmapp...${RESET}"
+    cp -f "${REPO_ROOT}/server/NanoKVM-Server" "${stage_dir}/overlay/kvmapp/server/NanoKVM-Server"
+    chmod 755 "${stage_dir}/overlay/kvmapp/server/NanoKVM-Server"
+    cp -af "${REPO_ROOT}/web/dist/." "${stage_dir}/overlay/kvmapp/server/web/"
+
+    # Stage kvmapp helper scripts & CUA assets (excluding device_number and dl_lib symlinks
+    # so live device identity is preserved and WebUI tar validator accepts all regular files)
+    if [[ -d "${SUPPORT_DIR}/packages/nanokvmpro/kvmapp/scripts" ]]; then
+        cp -af "${SUPPORT_DIR}/packages/nanokvmpro/kvmapp/scripts/." "${stage_dir}/overlay/kvmapp/scripts/"
+    fi
+    if [[ -d "${SUPPORT_DIR}/packages/nanokvmpro/kvmapp/cua" ]]; then
+        mkdir -p "${stage_dir}/overlay/kvmapp/cua"
+        cp -af "${SUPPORT_DIR}/packages/nanokvmpro/kvmapp/cua/." "${stage_dir}/overlay/kvmapp/cua/"
+    fi
 
     # Stage KVMComm scripts directly from package source tree
     if [[ -d "${SUPPORT_DIR}/packages/kvmcomm/kvmcomm/scripts" ]]; then
         cp -af "${SUPPORT_DIR}/packages/kvmcomm/kvmcomm/scripts/." "${stage_dir}/overlay/kvmcomm/scripts/"
+    fi
+
+    # Strip host Python bytecode caches and ensure no symlinks exist (update_artifact.go rejects non-regular files)
+    find "${stage_dir}/overlay" -type d -name "__pycache__" -prune -exec rm -rf {} +
+    find "${stage_dir}/overlay" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
+    if find "${stage_dir}" -type l | grep -q .; then
+        echo -e "${RED}[✗] Symlinks detected in firmware staging directory (rejected by WebUI archive validator):${RESET}" >&2
+        find "${stage_dir}" -type l >&2
+        rm -rf "${stage_dir}"
+        exit 1
     fi
 
     # Ensure executable permissions on all staged scripts and binaries

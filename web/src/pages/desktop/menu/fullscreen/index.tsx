@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Tooltip } from 'antd';
+import { Button, Tooltip } from 'antd';
 import { MaximizeIcon, MinimizeIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -38,13 +38,23 @@ export const Fullscreen = () => {
   }
 
   return (
-    <Tooltip title={t('fullscreen.toggle')} placement="bottom" mouseEnterDelay={0.6}>
-      <div
-        className="hidden h-[30px] w-[30px] cursor-pointer items-center justify-center rounded text-neutral-300 hover:bg-neutral-700/80 hover:text-white sm:flex"
-        onClick={handleFullscreen}
-      >
-        {isFullscreen ? <MinimizeIcon size={18} /> : <MaximizeIcon size={18} />}
-      </div>
-    </Tooltip>
+    <div className="hidden sm:flex">
+      <Tooltip title={t('fullscreen.toggle')} placement="bottom" mouseEnterDelay={0.6}>
+        <Button
+          type="text"
+          size="small"
+          aria-label={t('fullscreen.toggle')}
+          icon={
+            isFullscreen ? (
+              <MinimizeIcon size={18} aria-hidden="true" />
+            ) : (
+              <MaximizeIcon size={18} aria-hidden="true" />
+            )
+          }
+          className="flex h-[30px] w-[30px] items-center justify-center p-0 text-neutral-300 hover:text-white"
+          onClick={handleFullscreen}
+        />
+      </Tooltip>
+    </div>
   );
 };
