@@ -130,10 +130,18 @@ function installMockHidAndScreen() {
     typedText: 'root@host:~# ',
     keyHistory: [] as string[],
     prevKeycode: 0,
-    dragBox: { x: 1260, y: 240, w: 380, h: 200, dragging: false, offsetX: 0, offsetY: 0 },
+    dragBox: { x: 1260, y: 200, w: 420, h: 190, dragging: false, offsetX: 0, offsetY: 0 },
+    scrollPaneOffset: 0,
     clicks: [] as { x: number; y: number; right: boolean; ts: number }[],
     targetHits: [false, false, false]
   };
+
+  const LOG_LINE_COUNT = 200;
+  const VISIBLE_LOG_LINES = 10;
+  const logLines = Array.from({ length: LOG_LINE_COUNT }, (_, i) => {
+    const n = String(i + 1).padStart(3, '0');
+    return `[Line ${n}/200] systemd-journald: mock kernel event #${1000 + i * 7}`;
+  });
 
   const targets = [
     { x: 48, y: 90, w: 170, h: 46, label: 'Tiny Target 1' },
@@ -166,6 +174,11 @@ function installMockHidAndScreen() {
       if (wheelY !== 0 || wheelX !== 0) {
         state.wheelTotalY += wheelY;
         state.wheelTotalX += wheelX;
+        // HID wheel > 0 = scroll up (move viewport toward line 1), wheel < 0 = scroll down
+        state.scrollPaneOffset = Math.max(
+          0,
+          Math.min(LOG_LINE_COUNT - VISIBLE_LOG_LINES, state.scrollPaneOffset - wheelY)
+        );
         state.lastEventLabel = `Wheel dY=${wheelY} dX=${wheelX} (total Y=${state.wheelTotalY})`;
       }
     } else if (bytes.length >= 4) {
@@ -179,6 +192,10 @@ function installMockHidAndScreen() {
       if (wheelY !== 0 || wheelX !== 0) {
         state.wheelTotalY += wheelY;
         state.wheelTotalX += wheelX;
+        state.scrollPaneOffset = Math.max(
+          0,
+          Math.min(LOG_LINE_COUNT - VISIBLE_LOG_LINES, state.scrollPaneOffset - wheelY)
+        );
         state.lastEventLabel = `Wheel dY=${wheelY} dX=${wheelX} (total Y=${state.wheelTotalY})`;
       }
     }
@@ -380,6 +397,47 @@ function installMockHidAndScreen() {
     ctx.fillStyle = '#bfdbfe';
     ctx.fillText(`pos: (${b.x}, ${b.y})`, b.x + 24, b.y + 90);
     ctx.fillText(`scroll Y: ${state.wheelTotalY}  X: ${state.wheelTotalX}`, b.x + 24, b.y + 130);
+
+    // Visual Scrollable Log Pane (60 lines + scrollbar thumb)
+    const sp = { x: 1260, y: 420, w: 610, h: 400 };
+    ctx.fillStyle = '#090d16';
+    ctx.fillRect(sp.x, sp.y, sp.w, sp.h);
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sp.x, sp.y, sp.w, sp.h);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(sp.x, sp.y, sp.w, 40);
+    ctx.fillStyle = '#7dd3fc';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText(
+      `Scroll Test Viewer (Lines ${state.scrollPaneOffset + 1}-${state.scrollPaneOffset + VISIBLE_LOG_LINES} of ${LOG_LINE_COUNT})`,
+      sp.x + 16,
+      sp.y + 26
+    );
+
+    ctx.font = '16px monospace';
+    for (let i = 0; i < VISIBLE_LOG_LINES; i++) {
+      const idx = state.scrollPaneOffset + i;
+      const rowY = sp.y + 70 + i * 32;
+      if (idx % 2 === 0) {
+        ctx.fillStyle = 'rgba(30, 41, 59, 0.45)';
+        ctx.fillRect(sp.x + 6, rowY - 20, sp.w - 26, 28);
+      }
+      ctx.fillStyle = idx === state.scrollPaneOffset ? '#fde047' : '#cbd5e1';
+      ctx.fillText(logLines[idx], sp.x + 14, rowY);
+    }
+
+    // Scrollbar track + thumb
+    const trackX = sp.x + sp.w - 14;
+    const trackY = sp.y + 44;
+    const trackH = sp.h - 50;
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(trackX, trackY, 8, trackH);
+    const maxOffset = LOG_LINE_COUNT - VISIBLE_LOG_LINES;
+    const thumbH = Math.max(36, (VISIBLE_LOG_LINES / LOG_LINE_COUNT) * trackH);
+    const thumbY = trackY + (state.scrollPaneOffset / maxOffset) * (trackH - thumbH);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(trackX, thumbY, 8, thumbH);
 
     // Simulated Terminal window for phone keyboard testing
     ctx.fillStyle = '#020617';

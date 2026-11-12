@@ -1,11 +1,16 @@
 import { useEffect, useRef } from 'react';
 import { message } from 'antd';
-import { useAtom, useAtomValue } from 'jotai';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 
 import { MouseReportRelative } from '@/lib/mouse.ts';
 import { getScreenElement, inverseRotateDelta } from '@/lib/video-transform.ts';
-import { scrollDirectionAtom, scrollIntervalAtom, touchModeAtom } from '@/jotai/mouse.ts';
+import {
+  isZoomScrollModeAtom,
+  scrollDirectionAtom,
+  scrollIntervalAtom,
+  touchModeAtom
+} from '@/jotai/mouse.ts';
 import { videoModeAtom, videoParametersAtom, viewportZoomAtom } from '@/jotai/screen.ts';
 import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 
@@ -29,6 +34,7 @@ export const Relative = () => {
   const videoMode = useAtomValue(videoModeAtom);
   const videoParameters = useAtomValue(videoParametersAtom);
   const [zoom, setZoom] = useAtom(viewportZoomAtom);
+  const setIsZoomScrollMode = useSetAtom(isZoomScrollModeAtom);
 
   const mouseRef = useRef(new MouseReportRelative());
   const isLockedRef = useRef(false);
@@ -212,6 +218,9 @@ export const Relative = () => {
       },
       onResetButtons: () => {
         releaseMouse(false, false);
+      },
+      onZoomScrollStateChange: (active) => {
+        setIsZoomScrollMode(active);
       }
     });
 
@@ -282,6 +291,7 @@ export const Relative = () => {
       }
       pendingDeltaX = 0;
       pendingDeltaY = 0;
+      setIsZoomScrollMode(false);
 
       releaseMouseAndExitPointerLock();
       detachTouch();
@@ -298,7 +308,7 @@ export const Relative = () => {
       window.removeEventListener('blur', handleWindowBlur);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [setZoom, videoMode]);
+  }, [setIsZoomScrollMode, setZoom, videoMode]);
 
   function disableEvent(event: Event) {
     event.preventDefault();

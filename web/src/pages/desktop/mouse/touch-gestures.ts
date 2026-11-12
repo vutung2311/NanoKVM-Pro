@@ -17,6 +17,7 @@ export interface TouchGestureOptions {
   onButton: (type: 'mousedown' | 'mouseup', button: number) => boolean;
   onWheel: (deltaY: number, deltaX: number, clientX: number, clientY: number) => void;
   onResetButtons: () => void;
+  onZoomScrollStateChange?: (active: boolean) => void;
 }
 
 const TAP_MAX_DIST = 10;
@@ -27,8 +28,12 @@ const DIRECT_DRAG_THRESHOLD = 10;
 const LONG_PRESS_MS = 600;
 const PINCH_LOCK_PX = 14;
 const SCROLL_LOCK_PX = 10;
-const PAN_START_PX = 3;
-const SCROLL_STEP_PX = 22;
+const ZOOMED_PAN_LOCK_PX = 10;
+const TWO_FINGER_SCROLL_HOLD_MS = 180;
+const SCROLL_STEP_PX = 20;
+const MAX_WHEEL_TICKS_PER_STEP = 6;
+const MIN_MOMENTUM_VELOCITY = 0.45;
+const MAX_MOMENTUM_VELOCITY = 3.6;
 
 export function createTouchGestureController(options: TouchGestureOptions) {
   let activeTouchCount = 0;
@@ -49,6 +54,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
 
   let longPressTimer: ReturnType<typeof setTimeout> | null = null;
   let doubleTapHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  let twoFingerHoldTimer: ReturnType<typeof setTimeout> | null = null;
   const pendingTapReleases = new Map<ReturnType<typeof setTimeout>, TouchMouseButton>();
 
   let lastTapTime = 0;
@@ -58,6 +64,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
 
   // Multi-touch state
   let isMultiTouch = false;
+  let maxTouchCount = 0;
   let twoFingerStartTime = 0;
   let startPinchDist = 0;
   let prevPinchDist = 0;
@@ -65,12 +72,75 @@ export function createTouchGestureController(options: TouchGestureOptions) {
   let startMidY = 0;
   let prevMidX = 0;
   let prevMidY = 0;
+  let scrollAnchorX = 0;
+  let scrollAnchorY = 0;
   let maxPinchDelta = 0;
   let maxMidDelta = 0;
   let multiMode: 'undecided' | 'pinch' | 'scroll' = 'undecided';
   let pinchScaleUnlocked = false;
+  let scrollLockedByHold = false;
+  let zoomScrollBadgeActive = false;
   let scrollAccX = 0;
   let scrollAccY = 0;
+  let prevMultiMoveTime = 0;
+  let lastMultiMoveTime = 0;
+  let scrollVelX = 0;
+  let scrollVelY = 0;
+  let momentumStartedThisGesture = false;
+  let stoppedCoastingOnTouchStart = false;
+  let scrollMomentumRaf: number | null = null;
+
+  function stopScrollMomentum() {
+    if (scrollMomentumRaf !== null) {
+      cancelAnimationFrame(scrollMomentumRaf);
+      scrollMomentumRaf = null;
+    }
+    scrollVelX = 0;
+    scrollVelY = 0;
+  }
+
+  function startScrollMomentum(vx: number, vy: number, anchorX: number, anchorY: number) {
+    stopScrollMomentum();
+    const speed = Math.hypot(vx, vy);
+    if (speed < MIN_MOMENTUM_VELOCITY) return;
+
+    const scale = Math.min(MAX_MOMENTUM_VELOCITY, speed * 1.3) / speed;
+    let curVx = vx * scale;
+    let curVy = vy * scale;
+    let lastFrame = performance.now();
+
+    const step = (frameNow: number) => {
+      const dt = Math.min(34, Math.max(8, frameNow - lastFrame));
+      lastFrame = frameNow;
+
+      const friction = Math.pow(0.92, dt / 16);
+      curVx *= friction;
+      curVy *= friction;
+
+      if (Math.hypot(curVx, curVy) < 0.08) {
+        scrollMomentumRaf = null;
+        return;
+      }
+
+      emitAccumulatedScroll(curVx * dt, curVy * dt, anchorX, anchorY);
+      scrollMomentumRaf = requestAnimationFrame(step);
+    };
+
+    scrollMomentumRaf = requestAnimationFrame(step);
+  }
+
+  function setZoomScrollActive(active: boolean) {
+    if (zoomScrollBadgeActive === active) return;
+    zoomScrollBadgeActive = active;
+    options.onZoomScrollStateChange?.(active);
+  }
+
+  function clearTwoFingerHoldTimer() {
+    if (twoFingerHoldTimer) {
+      clearTimeout(twoFingerHoldTimer);
+      twoFingerHoldTimer = null;
+    }
+  }
 
   function clearSingleFingerTimers() {
     if (longPressTimer) {
@@ -85,6 +155,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
 
   function clearAllTimers() {
     clearSingleFingerTimers();
+    clearTwoFingerHoldTimer();
     for (const timer of pendingTapReleases.keys()) {
       clearTimeout(timer);
     }
@@ -112,6 +183,8 @@ export function createTouchGestureController(options: TouchGestureOptions) {
 
   function cancel(cancelActiveSequence = true) {
     clearAllTimers();
+    stopScrollMomentum();
+    setZoomScrollActive(false);
 
     if (cancelActiveSequence && activeTouchCount > 0) {
       sequenceCanceled = true;
@@ -122,8 +195,12 @@ export function createTouchGestureController(options: TouchGestureOptions) {
     isLongPress = false;
     pressedButton = null;
     isMultiTouch = false;
+    maxTouchCount = 0;
     multiMode = 'undecided';
     pinchScaleUnlocked = false;
+    scrollLockedByHold = false;
+    momentumStartedThisGesture = false;
+    stoppedCoastingOnTouchStart = false;
     scrollAccX = 0;
     scrollAccY = 0;
   }
@@ -136,6 +213,49 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       midX: (t0.clientX + t1.clientX) / 2,
       midY: (t0.clientY + t1.clientY) / 2
     };
+  }
+
+  function emitAccumulatedScroll(
+    stepDx: number,
+    stepDy: number,
+    anchorX: number,
+    anchorY: number
+  ) {
+    const { direction, interval } = options.getScrollConfig();
+
+    // Dampen cross-axis wrist drift during predominantly vertical or horizontal swipes
+    if (Math.abs(stepDy) >= Math.abs(stepDx) * 1.5) {
+      scrollAccY += stepDy;
+      scrollAccX *= 0.5;
+    } else if (Math.abs(stepDx) >= Math.abs(stepDy) * 1.5) {
+      scrollAccX += stepDx;
+      scrollAccY *= 0.5;
+    } else {
+      scrollAccY += stepDy;
+      scrollAccX += stepDx;
+    }
+
+    const now = Date.now();
+    if (
+      (Math.abs(scrollAccY) >= SCROLL_STEP_PX || Math.abs(scrollAccX) >= SCROLL_STEP_PX) &&
+      now - lastScrollTime >= interval
+    ) {
+      const ticksY = Math.trunc(scrollAccY / SCROLL_STEP_PX);
+      const ticksX = Math.trunc(scrollAccX / SCROLL_STEP_PX);
+      scrollAccY -= ticksY * SCROLL_STEP_PX;
+      scrollAccX -= ticksX * SCROLL_STEP_PX;
+
+      // Finger moving down scrolls content up (natural trackpad scrolling) modulated by scrollDirection
+      const clampedTicksY = Math.max(-MAX_WHEEL_TICKS_PER_STEP, Math.min(MAX_WHEEL_TICKS_PER_STEP, -ticksY));
+      const clampedTicksX = Math.max(-MAX_WHEEL_TICKS_PER_STEP, Math.min(MAX_WHEEL_TICKS_PER_STEP, ticksX));
+      const deltaY = clampedTicksY !== 0 ? clampedTicksY * direction : 0;
+      const deltaX = clampedTicksX !== 0 ? clampedTicksX * direction : 0;
+
+      if (deltaY !== 0 || deltaX !== 0) {
+        options.onWheel(deltaY, deltaX, anchorX, anchorY);
+        lastScrollTime = now;
+      }
+    }
   }
 
   function clampZoom(scale: number, x: number, y: number, surface: HTMLElement): ViewportZoomState {
@@ -163,7 +283,11 @@ export function createTouchGestureController(options: TouchGestureOptions) {
 
       const startsNewSequence = e.touches.length === e.changedTouches.length;
       if (startsNewSequence) {
+        stoppedCoastingOnTouchStart = scrollMomentumRaf !== null;
+        stopScrollMomentum();
         clearSingleFingerTimers();
+        clearTwoFingerHoldTimer();
+        setZoomScrollActive(false);
         flushPendingTapReleases();
         if (pressedButton !== null) {
           options.onResetButtons();
@@ -171,12 +295,31 @@ export function createTouchGestureController(options: TouchGestureOptions) {
         }
         sequenceCanceled = false;
         isMultiTouch = false;
+        maxTouchCount = 0;
+        scrollLockedByHold = false;
+        momentumStartedThisGesture = false;
       }
 
       activeTouchCount = e.touches.length;
+      maxTouchCount = Math.max(maxTouchCount, e.touches.length);
       if (sequenceCanceled) return;
 
-      if (e.touches.length >= 2) {
+      if (e.touches.length >= 3) {
+        clearSingleFingerTimers();
+        clearTwoFingerHoldTimer();
+        setZoomScrollActive(false);
+        if (pressedButton !== null) {
+          options.onButton('mouseup', pressedButton);
+          pressedButton = null;
+        }
+        isDragging = false;
+        isDoubleTapCandidate = false;
+        isLongPress = false;
+        isMultiTouch = true;
+        return;
+      }
+
+      if (e.touches.length === 2) {
         clearSingleFingerTimers();
         if (pressedButton !== null) {
           options.onButton('mouseup', pressedButton);
@@ -188,7 +331,8 @@ export function createTouchGestureController(options: TouchGestureOptions) {
 
         if (!isMultiTouch) {
           isMultiTouch = true;
-          twoFingerStartTime = Date.now();
+          const now = Date.now();
+          twoFingerStartTime = now;
           const m = getTwoFingerMetrics(e.touches[0], e.touches[1]);
           startPinchDist = m.dist;
           prevPinchDist = m.dist;
@@ -196,12 +340,42 @@ export function createTouchGestureController(options: TouchGestureOptions) {
           startMidY = m.midY;
           prevMidX = m.midX;
           prevMidY = m.midY;
+          scrollAnchorX = m.midX;
+          scrollAnchorY = m.midY;
           maxPinchDelta = 0;
           maxMidDelta = 0;
           multiMode = 'undecided';
           pinchScaleUnlocked = false;
+          scrollLockedByHold = false;
+          momentumStartedThisGesture = false;
+          prevMultiMoveTime = now;
+          lastMultiMoveTime = 0;
+          scrollVelX = 0;
+          scrollVelY = 0;
           scrollAccX = 0;
           scrollAccY = 0;
+
+          if (options.getZoom().scale > 1.02) {
+            clearTwoFingerHoldTimer();
+            twoFingerHoldTimer = setTimeout(() => {
+              twoFingerHoldTimer = null;
+              if (!isMultiTouch || activeTouchCount !== 2 || multiMode !== 'undecided') {
+                return;
+              }
+              multiMode = 'scroll';
+              scrollLockedByHold = true;
+              prevMultiMoveTime = Date.now();
+              lastMultiMoveTime = 0;
+              scrollVelX = 0;
+              scrollVelY = 0;
+              scrollAccX = 0;
+              scrollAccY = 0;
+              if (navigator.vibrate) {
+                navigator.vibrate(25);
+              }
+              setZoomScrollActive(true);
+            }, TWO_FINGER_SCROLL_HOLD_MS);
+          }
         }
         return;
       }
@@ -270,7 +444,13 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       if (sequenceCanceled || e.touches.length === 0) return;
 
       if (isMultiTouch) {
-        if (e.touches.length < 2) return;
+        if (e.touches.length !== 2) {
+          clearTwoFingerHoldTimer();
+          if (e.touches.length < 2) {
+            setZoomScrollActive(false);
+          }
+          return;
+        }
 
         const m = getTwoFingerMetrics(e.touches[0], e.touches[1]);
         const distDelta = Math.abs(m.dist - startPinchDist);
@@ -278,22 +458,29 @@ export function createTouchGestureController(options: TouchGestureOptions) {
         maxPinchDelta = Math.max(maxPinchDelta, distDelta);
         maxMidDelta = Math.max(maxMidDelta, midDelta);
 
-        if (distDelta > PINCH_LOCK_PX) {
+        if (!scrollLockedByHold && distDelta > PINCH_LOCK_PX) {
           pinchScaleUnlocked = true;
         }
 
         if (multiMode === 'undecided') {
           const isCurrentlyZoomed = options.getZoom().scale > 1.02;
           if (pinchScaleUnlocked) {
+            clearTwoFingerHoldTimer();
             multiMode = 'pinch';
-          } else if (isCurrentlyZoomed && midDelta > PAN_START_PX) {
-            // When zoomed in, 2-finger swipe immediately pans the zoomed viewport
+          } else if (isCurrentlyZoomed && midDelta > ZOOMED_PAN_LOCK_PX) {
+            // Immediate 2-finger swipe while zoomed pans the viewport
+            clearTwoFingerHoldTimer();
             multiMode = 'pinch';
           } else if (!isCurrentlyZoomed && midDelta > SCROLL_LOCK_PX) {
+            clearTwoFingerHoldTimer();
             multiMode = 'scroll';
           }
-        } else if (multiMode === 'scroll' && distDelta > PINCH_LOCK_PX * 1.5) {
-          // Allow transitioning into pinch-zoom if fingers spread apart mid-gesture
+        } else if (
+          multiMode === 'scroll' &&
+          !scrollLockedByHold &&
+          distDelta > PINCH_LOCK_PX * 1.5
+        ) {
+          // Unzoomed scroll transitioning into pinch-zoom if fingers spread apart mid-gesture
           pinchScaleUnlocked = true;
           multiMode = 'pinch';
         }
@@ -312,29 +499,26 @@ export function createTouchGestureController(options: TouchGestureOptions) {
 
           options.setZoom(clampZoom(nextScale, nextX, nextY, surface));
         } else if (multiMode === 'scroll') {
-          const { direction, interval } = options.getScrollConfig();
-          scrollAccY += m.midY - prevMidY;
-          scrollAccX += m.midX - prevMidX;
-
           const now = Date.now();
-          if (
-            (Math.abs(scrollAccY) >= SCROLL_STEP_PX || Math.abs(scrollAccX) >= SCROLL_STEP_PX) &&
-            now - lastScrollTime >= interval
-          ) {
-            const ticksY = Math.trunc(scrollAccY / SCROLL_STEP_PX);
-            const ticksX = Math.trunc(scrollAccX / SCROLL_STEP_PX);
-            scrollAccY -= ticksY * SCROLL_STEP_PX;
-            scrollAccX -= ticksX * SCROLL_STEP_PX;
+          const dt = Math.max(4, now - prevMultiMoveTime);
+          const stepDx = m.midX - prevMidX;
+          const stepDy = m.midY - prevMidY;
+          const instVx = stepDx / dt;
+          const instVy = stepDy / dt;
+          scrollVelX = scrollVelX * 0.35 + instVx * 0.65;
+          scrollVelY = scrollVelY * 0.35 + instVy * 0.65;
+          prevMultiMoveTime = now;
+          lastMultiMoveTime = now;
 
-            // Finger moving down scrolls content up (natural trackpad scrolling) modulated by scrollDirection
-            const deltaY = ticksY !== 0 ? (ticksY > 0 ? -1 : 1) * direction : 0;
-            const deltaX = ticksX !== 0 ? (ticksX > 0 ? 1 : -1) * direction : 0;
+          const speed = Math.hypot(instVx, instVy);
+          const accel = speed <= 0.35 ? 1 : Math.min(3.2, 1 + (speed - 0.35) * 1.1);
 
-            if (deltaY !== 0 || deltaX !== 0) {
-              options.onWheel(deltaY, deltaX, m.midX, m.midY);
-              lastScrollTime = now;
-            }
-          }
+          emitAccumulatedScroll(
+            stepDx * accel,
+            stepDy * accel,
+            scrollAnchorX,
+            scrollAnchorY
+          );
         }
 
         prevPinchDist = m.dist;
@@ -412,9 +596,25 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       }
 
       if (isMultiTouch) {
+        if (e.touches.length < 2) {
+          clearTwoFingerHoldTimer();
+          setZoomScrollActive(false);
+
+          if (
+            !momentumStartedThisGesture &&
+            multiMode === 'scroll' &&
+            lastMultiMoveTime > 0 &&
+            Date.now() - lastMultiMoveTime <= 90
+          ) {
+            momentumStartedThisGesture = true;
+            startScrollMomentum(scrollVelX, scrollVelY, scrollAnchorX, scrollAnchorY);
+          }
+        }
+
         if (e.touches.length === 0) {
           const duration = Date.now() - twoFingerStartTime;
           if (
+            maxTouchCount === 2 &&
             multiMode === 'undecided' &&
             duration <= 280 &&
             maxMidDelta <= 14 &&
@@ -423,6 +623,10 @@ export function createTouchGestureController(options: TouchGestureOptions) {
             emitQuickClick(TouchMouseButton.Right);
           }
           isMultiTouch = false;
+          maxTouchCount = 0;
+          scrollLockedByHold = false;
+          momentumStartedThisGesture = false;
+          stoppedCoastingOnTouchStart = false;
           multiMode = 'undecided';
         }
         return;
@@ -432,13 +636,15 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       const duration = now - startTime;
 
       if (!isDragging && !isLongPress && maxMoveDist <= TAP_MAX_DIST && duration <= TAP_MAX_MS) {
-        emitQuickClick(TouchMouseButton.Left);
-        if (isDoubleTapCandidate) {
-          lastTapTime = 0;
-        } else {
-          lastTapTime = now;
-          lastTapX = startX;
-          lastTapY = startY;
+        if (!stoppedCoastingOnTouchStart) {
+          emitQuickClick(TouchMouseButton.Left);
+          if (isDoubleTapCandidate) {
+            lastTapTime = 0;
+          } else {
+            lastTapTime = now;
+            lastTapX = startX;
+            lastTapY = startY;
+          }
         }
       } else if (pressedButton !== null) {
         options.onButton('mouseup', pressedButton);
@@ -448,6 +654,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       isDoubleTapCandidate = false;
       isLongPress = false;
       pressedButton = null;
+      stoppedCoastingOnTouchStart = false;
     }
 
     function handleTouchCancel(e: TouchEvent) {
@@ -469,6 +676,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
     surface.addEventListener('touchcancel', handleTouchCancel, { passive: false });
 
     return () => {
+      stopScrollMomentum();
       surface.removeEventListener('touchstart', handleTouchStart);
       surface.removeEventListener('touchmove', handleTouchMove);
       surface.removeEventListener('touchend', handleTouchEnd);

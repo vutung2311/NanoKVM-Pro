@@ -26,3 +26,6 @@ export const virtualCursorAtom = atom({
   y: 0.5,
   visible: false
 });
+
+// whether 2-finger hold-to-scroll is actively engaged while zoomed in
+export const isZoomScrollModeAtom = atom(false);
