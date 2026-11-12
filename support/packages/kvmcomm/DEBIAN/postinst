@@ -80,19 +80,22 @@ if [ -f /boot/configs ]; then
     sed -i 's/\(maix_memory_cmm=\).*/\1200/' /boot/configs || true
 fi
 
-sed -i -E \
-    -e '/^#?SystemMaxUse=/c SystemMaxUse=200M' \
-    -e '/^#?SystemMaxFileSize=/c SystemMaxFileSize=50M' \
-    /etc/systemd/journald.conf
+if [ -f /etc/systemd/journald.conf ]; then
+    sed -i -E \
+        -e '/^#?SystemMaxUse=/c SystemMaxUse=200M' \
+        -e '/^#?SystemMaxFileSize=/c SystemMaxFileSize=50M' \
+        /etc/systemd/journald.conf
+    grep -q '^SystemMaxUse=' /etc/systemd/journald.conf || echo 'SystemMaxUse=200M' >> /etc/systemd/journald.conf
+    grep -q '^SystemMaxFileSize=' /etc/systemd/journald.conf || echo 'SystemMaxFileSize=50M' >> /etc/systemd/journald.conf
+fi
 
-grep -q '^SystemMaxUse=' /etc/systemd/journald.conf || echo 'SystemMaxUse=200M' | tee -a /etc/systemd/journald.conf
-grep -q '^SystemMaxFileSize=' /etc/systemd/journald.conf || echo 'SystemMaxFileSize=50M' | tee -a /etc/systemd/journald.conf
+if [ -f /etc/crontab ]; then
+    sed -i '/\/sbin\/hwclock -w -f \/dev\/rtc0/d' /etc/crontab || true
+    sed -i '/sleep 60 && systemctl restart ntp/d' /etc/crontab || true
+fi
 
-sed -i '/\/sbin\/hwclock -w -f \/dev\/rtc0/d' /etc/crontab
-sed -i '/sleep 60 && systemctl restart ntp/d' /etc/crontab
-
-sed -i 's|^bash/etc/init.d/axemac.sh$|bash /etc/init.d/axemac.sh|' /etc/rc.local
 if [ -f /etc/rc.local ]; then
+    sed -i 's|^bash/etc/init.d/axemac.sh$|bash /etc/init.d/axemac.sh|' /etc/rc.local
     sed -i '/192\.168\.100\.200/d' /etc/rc.local
 fi
 
