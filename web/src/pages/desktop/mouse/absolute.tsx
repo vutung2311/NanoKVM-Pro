@@ -9,6 +9,7 @@ import {
   inverseRotatePoint
 } from '@/lib/video-transform.ts';
 import {
+  isZoomScrollModeAtom,
   scrollDirectionAtom,
   scrollIntervalAtom,
   touchModeAtom,
@@ -38,6 +39,7 @@ export const Absolute = () => {
   const videoParameters = useAtomValue(videoParametersAtom);
   const [zoom, setZoom] = useAtom(viewportZoomAtom);
   const setVirtualCursor = useSetAtom(virtualCursorAtom);
+  const setIsZoomScrollMode = useSetAtom(isZoomScrollModeAtom);
 
   const mouseRef = useRef(new MouseReportAbsolute());
   // Absolute reports store HID coordinates (0..0x7fff), paired with normalized float coords for sub-pixel trackpad glides.
@@ -231,6 +233,9 @@ export const Absolute = () => {
       },
       onResetButtons: () => {
         releaseMouse({ cancelTouchSequence: false });
+      },
+      onZoomScrollStateChange: (active) => {
+        setIsZoomScrollMode(active);
       }
     });
 
@@ -328,6 +333,7 @@ export const Absolute = () => {
       }
       pendingClientPos = null;
       pendingTrackpadPos = null;
+      setIsZoomScrollMode(false);
 
       releaseMouse();
       detachTouch();
@@ -345,7 +351,7 @@ export const Absolute = () => {
       window.removeEventListener('mousemove', handleWindowMouseMove);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [setVirtualCursor, setZoom, videoMode]);
+  }, [setIsZoomScrollMode, setVirtualCursor, setZoom, videoMode]);
 
   function disableEvent(event: Event) {
     event.preventDefault();

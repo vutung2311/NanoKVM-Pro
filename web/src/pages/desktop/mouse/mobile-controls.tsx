@@ -2,12 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Button, Divider } from 'antd';
 import clsx from 'clsx';
 import { useAtomValue } from 'jotai';
-import { LockIcon } from 'lucide-react';
+import { ArrowUpDownIcon, LockIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { getRenderedMediaBox, getScreenElement, rotatePoint } from '@/lib/video-transform.ts';
 import { isMobileKeyboardOpenAtom } from '@/jotai/keyboard.ts';
 import {
+  isZoomScrollModeAtom,
   mouseModeAtom,
   showMobileMouseButtonsAtom,
   touchModeAtom,
@@ -29,6 +30,7 @@ export const MobileMouseControls = () => {
   const videoParameters = useAtomValue(videoParametersAtom);
   const zoom = useAtomValue(viewportZoomAtom);
   const isMobileKeyboardOpen = useAtomValue(isMobileKeyboardOpenAtom);
+  const isZoomScrollMode = useAtomValue(isZoomScrollModeAtom);
 
   const [dragLocked, setDragLocked] = useState(false);
   const [cursorScreenPos, setCursorScreenPos] = useState<{ x: number; y: number } | null>(null);
@@ -182,6 +184,20 @@ export const MobileMouseControls = () => {
 
   return (
     <>
+      {/* Transient non-interactive HUD badge confirming 2-finger hold-to-scroll while zoomed */}
+      {isZoomScrollMode && (
+        <div
+          aria-live="polite"
+          className="pointer-events-none fixed left-1/2 z-[985] flex h-[28px] -translate-x-1/2 select-none items-center gap-1.5 rounded-full border border-blue-400/40 bg-neutral-900/85 px-3 text-xs font-medium text-blue-300 shadow-lg backdrop-blur-sm"
+          style={{
+            top: 'max(54px, calc(var(--safe-top) + 50px))'
+          }}
+        >
+          <ArrowUpDownIcon size={13} aria-hidden="true" />
+          <span>{t('mouse.scrollMode', { defaultValue: 'Scroll' })}</span>
+        </div>
+      )}
+
       {/* Local zero-latency cursor indicator in Trackpad + Absolute mode */}
       {cursorScreenPos && (
         <div

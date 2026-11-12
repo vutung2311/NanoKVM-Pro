@@ -190,6 +190,7 @@ const en = {
       rightBtn: 'Right',
       drag: 'Drag',
       dragLock: 'Drag Lock',
+      scrollMode: 'Scroll',
       hidOnly: {
         title: 'HID-Only mode',
         desc: "If your mouse and keyboard stop responding and resetting HID doesn't help, it could be a compatibility issue between the NanoKVM and the device. Try to enable HID-Only mode for better compatibility.",
