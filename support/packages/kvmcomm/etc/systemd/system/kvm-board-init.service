@@ -1,0 +1,15 @@
+[Unit]
+Description=NanoKVM-Pro board init (drivers, rotary pinmux, NPU limit, OTA check)
+# Pulled in by kvmcomm.service's Wants=, not enabled with a symlink: a
+# firmware-pkg update can ship unit files but cannot create symlinks.
+# A vendor-base /etc/rc.local runs the same steps; never race it.
+After=rc-local.service
+
+[Service]
+Type=oneshot
+# Stays active after the first run, so a kvmcomm.service restart does not
+# run board init again.
+RemainAfterExit=yes
+ExecStart=/kvmcomm/scripts/board_init.sh
+StandardOutput=journal
+StandardError=journal

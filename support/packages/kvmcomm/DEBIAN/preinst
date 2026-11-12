@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
-if systemctl is-active --quiet kvmcomm.service; then
-    systemctl stop kvmcomm.service >/dev/null 2>&1
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl stop kvmcomm.service >/dev/null 2>&1 || true
 fi
 
 if [ -f /var/cache/debconf/config.dat ]; then

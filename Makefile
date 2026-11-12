@@ -30,6 +30,7 @@ BLOBS_BOOTFS_DIR    ?= $(BLOBS_DIR)/bootfs
 BLOBS_PACKAGES_DIR  ?= $(BLOBS_DIR)/packages
 BLOBS_ROOTFS_DIR    ?= $(BLOBS_DIR)/rootfs
 BASE_ROOTFS         ?= $(DIST_DIR)/ubuntu_rootfs.ext4
+CACHED_ROOTFS       ?= $(BASE_FIRMWARE_DIR)/ubuntu_rootfs.ext4
 
 # Release Artifact File Names & Templates
 BASE_AXP        ?= $(BASE_FIRMWARE_DIR)/20260529_NanoKVMPro_1_0_15.axp
@@ -86,7 +87,7 @@ RESET := \033[0m
 # ------------------------------------------------------------------------------
 # Phony Targets
 # ------------------------------------------------------------------------------
-.PHONY: all help check-tools setup-tooling fetch-base build server client web overlay deb app-pkg web-pkg rootfs image-axp image-raw image-img image release deploy deploy-all clean distclean flash-info check-upstream rebase-upstream sync-upstream firmware-pkg update-pkg firmware-flash update-flash kernel-check kernel-flash-b kernel-boot-a kernel-boot-b
+.PHONY: all help check-tools setup-tooling fetch-base build server client web overlay deb app-pkg web-pkg rootfs image-axp build-axp image-raw image-img image release deploy deploy-all clean distclean flash-info check-upstream rebase-upstream sync-upstream firmware-pkg update-pkg firmware-flash update-flash kernel-check kernel-flash-b kernel-boot-a kernel-boot-b
 
 # Default Target
 all: help
@@ -222,6 +223,21 @@ verify-rootfs:
 	@echo -e "$(CYAN)==> Running automated root filesystem verification test...$(RESET)"
 	$(PRIV_ESC) $(BUILD_PYTHON) $(CURDIR)/.agents/skills/nanokvm-rootfs-verification/scripts/verify_rootfs.py $(BASE_ROOTFS)
 
+## Verify hardware driver vermagic, pinmux, networking, and systemd parity
+verify-parity:
+	@echo -e "$(CYAN)==> Running automated hardware & rootfs parity verification...$(RESET)"
+	@if [ -f "$(OUTPUT_AXP)" ]; then \
+		$(PRIV_ESC) $(BUILD_PYTHON) $(SUPPORT_DIR)/scripts/verify_parity.py $(OUTPUT_AXP); \
+	elif [ -f "$(BASE_ROOTFS)" ]; then \
+		$(PRIV_ESC) $(BUILD_PYTHON) $(SUPPORT_DIR)/scripts/verify_parity.py $(BASE_ROOTFS); \
+	else \
+		echo -e "$(RED)Error: Neither $(OUTPUT_AXP) nor $(BASE_ROOTFS) found.$(RESET)"; \
+		exit 1; \
+	fi
+
+## Run all automated rootfs tests (runtime daemon smoke test + hardware parity)
+verify-all: verify-rootfs verify-parity
+
 
 ## Package update archive (.tar.gz) for Web UI update (Settings -> Update -> Manual Update)
 app-pkg: web-pkg
@@ -344,16 +360,21 @@ kernel-clean:
 # Image Generation Targets (.axp and .img.xz)
 # ------------------------------------------------------------------------------
 # Prevent parallel race conditions during heavy/privileged image modification
-.NOTPARALLEL: image-axp $(OUTPUT_AXP) image-raw image-img $(OUTPUT_IMG_XZ) image release
+.NOTPARALLEL: image-axp build-axp $(OUTPUT_AXP) image-raw image-img $(OUTPUT_IMG_XZ) image release
 
 ## Repackage base AXP into custom NanoKVM-Pro AXP image (embeds custom kernel if available)
 image-axp: $(OUTPUT_AXP)
+build-axp: image-axp
 
 $(OUTPUT_AXP): deb
 	@echo -e "$(CYAN)==> Packaging custom AXP image using build_image.py...$(RESET)"
-	@if [ ! -d "$(BLOBS_DIR)" ] && [ ! -f "$(BASE_AXP)" ]; then \
-		echo -e "$(CYAN)==> Repository blobs or base AXP not found, fetching base firmware...$(RESET)"; \
-		$(MAKE) fetch-base; \
+	@if [ ! -f "$(BASE_ROOTFS)" ] && [ -f "$(CACHED_ROOTFS)" ]; then \
+		echo -e "$(CYAN)==> Staging base rootfs from persistent cache ($(CACHED_ROOTFS))...$(RESET)"; \
+		cp --sparse=always -f "$(CACHED_ROOTFS)" "$(BASE_ROOTFS)"; \
+	fi
+	@if [ ! -f "$(BASE_ROOTFS)" ]; then \
+		echo -e "$(CYAN)==> Base rootfs not found in cache. Building rootfs from official Ubuntu base...$(RESET)"; \
+		$(MAKE) rootfs; \
 	fi
 	@if ! command -v qemu-aarch64-static >/dev/null 2>&1 && [ ! -x /usr/bin/qemu-aarch64-static ]; then \
 		echo -e "$(RED)Error: qemu-aarch64-static not found.$(RESET)"; \
@@ -369,13 +390,16 @@ $(OUTPUT_AXP): deb
 	@echo -e "$(YELLOW)[*] Elevated privileges required for image loop mounting and chroot.$(RESET)"
 	@echo -e "$(YELLOW)[*] Waiting for administrator authorization (Polkit/$(PRIV_ESC))...$(RESET)"
 	$(PRIV_ESC) $(BUILD_PYTHON) $(BUILD_IMAGE_DIR)/build_image.py \
-		$(if $(wildcard $(BLOBS_DIR)),--blobs $(BLOBS_DIR),$(BASE_AXP)) \
+		--blobs $(BLOBS_DIR) \
+		--rootfs $(BASE_ROOTFS) \
 		--app $(APP_DIR) \
 		$(if $(OVERLAY_DIR),$(if $(wildcard $(OVERLAY_DIR)),--overlay $(OVERLAY_DIR))) \
 		--work-dir $(WORK_DIR) \
 		$(if $(filter 1,$(USE_CUSTOM_KERNEL)),$(if $(wildcard $(CUSTOM_BOOT_BIN)),--boot $(CUSTOM_BOOT_BIN) --dtb $(CUSTOM_DTB_BIN))) \
 		-o $(OUTPUT_AXP)
 	@echo -e "$(GREEN)[✓] AXP image created: $(OUTPUT_AXP)$(RESET)"
+	@echo -e "$(CYAN)==> Verifying hardware parity and safety on generated AXP...$(RESET)"
+	$(PRIV_ESC) $(BUILD_PYTHON) $(SUPPORT_DIR)/scripts/verify_parity.py $(OUTPUT_AXP)
 
 ## Convert AXP image to compressed raw disk image (.img.xz)
 image-raw: image-img

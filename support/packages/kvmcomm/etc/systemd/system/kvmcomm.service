@@ -1,5 +1,10 @@
 [Unit]
 Description=KVM Commom Server
+# Board init loads the ax_* media drivers kvm_vin needs and the touch driver
+# kvm_ui reads. Without this ordering kvm_vin could start first, die, and
+# restart the whole unit.
+Wants=kvm-board-init.service
+After=kvm-board-init.service
 
 [Service]
 Type=simple

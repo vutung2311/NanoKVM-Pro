@@ -45,7 +45,7 @@ Proprietary BSP components injected into Ubuntu 22.04 rootfs:
 - `opt/lib/`: Hardware video encoding, decoding, and IVPS pipeline shared objects (`libax_venc.so`, `libax_sys.so`, etc.).
 - `opt/firmware/aic8800/`: AIC8800 Wi-Fi and Bluetooth firmware binaries.
 - `opt/scripts/`: Board maintenance scripts (`update_bl1.sh`, `sysdev.sh`).
-- `etc/rc.local` & `etc/init.d/`: Axera boot hardware initialization hooks.
+- `etc/init.d/`: Axera boot hardware initialization hooks, run at boot by kvmcomm's `kvm-board-init.service` (`/kvmcomm/scripts/board_init.sh`).
 - `etc/ld.so.conf.d/00-axera.conf`: Dynamic linker configuration indexing `/opt/lib` and `/kvmapp/server/dl_lib`.
 - `etc/tmpfiles.d/sshd.conf`: In-RAM tmpfs rule (`d /run/sshd 0755 root root -`) ensuring OpenSSH starts cleanly on-demand without exit code 255.
 - `etc/systemd/system/ssh.service.d/override.conf`: OpenSSH systemd drop-in override guaranteeing `/run/sshd` privilege separation directory creation.

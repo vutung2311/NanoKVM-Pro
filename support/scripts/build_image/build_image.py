@@ -140,7 +140,7 @@ def stage_bootloader_from_blobs(blobs_dir, temp_dir, replacements=None, overlay_
             item_path = os.path.join(overlay_dir, "boot", item)
             subprocess.run(["mcopy", "-o", "-i", bootfs_path, item_path, "::/"], check=True)
 
-def locate_base_rootfs(rootfs_path=None, blobs_dir=None):
+def locate_base_rootfs(rootfs_path=None, blobs_dir=None, axp_file=None):
     candidates = []
     if rootfs_path:
         candidates.append(rootfs_path)
@@ -149,8 +149,9 @@ def locate_base_rootfs(rootfs_path=None, blobs_dir=None):
     candidates.extend([
         os.path.join(repo_root, "build_dist/ubuntu_rootfs.ext4"),
         os.path.join(repo_root, "build_dist/ubuntu_rootfs_sparse.ext4"),
-        "/var/tmp/nanokvm_inspect/ubuntu_rootfs.ext4",
         os.path.join(repo_root, "support/base_firmware/ubuntu_rootfs.ext4"),
+        os.path.join(repo_root, "support/base_firmware/ubuntu_rootfs_sparse.ext4"),
+        "/var/tmp/nanokvm_inspect/ubuntu_rootfs.ext4",
     ])
     if blobs_dir:
         candidates.extend([
@@ -161,10 +162,51 @@ def locate_base_rootfs(rootfs_path=None, blobs_dir=None):
     for c in candidates:
         if c and os.path.exists(c):
             return c
+
+    # If no pre-existing rootfs file is found, check for a base AXP archive to extract from
+    base_firmware_dir = os.path.join(repo_root, "support/base_firmware")
+    axp_candidates = []
+    if axp_file and os.path.isfile(axp_file):
+        axp_candidates.append(axp_file)
+    if os.path.isdir(base_firmware_dir):
+        for fname in sorted(os.listdir(base_firmware_dir)):
+            if fname.endswith(".axp"):
+                full_axp = os.path.join(base_firmware_dir, fname)
+                if full_axp not in axp_candidates:
+                    axp_candidates.append(full_axp)
+
+    for axp_path in axp_candidates:
+        if not os.path.isfile(axp_path):
+            continue
+        try:
+            with zipfile.ZipFile(axp_path, 'r') as zf:
+                target_member = None
+                for member_name in ["ubuntu_rootfs_sparse.ext4", "ubuntu_rootfs.ext4"]:
+                    if member_name in zf.namelist():
+                        target_member = member_name
+                        break
+                if target_member:
+                    dest_dir = base_firmware_dir if os.path.isdir(base_firmware_dir) else os.path.dirname(os.path.abspath(axp_path))
+                    out_path = os.path.join(dest_dir, target_member)
+                    print(f"[+] Base rootfs image not pre-extracted; extracting {target_member} from {axp_path} -> {out_path}...")
+                    zf.extract(target_member, dest_dir)
+                    real_uid_str = os.environ.get("PKEXEC_UID") or os.environ.get("SUDO_UID")
+                    if real_uid_str and os.path.exists(out_path):
+                        try:
+                            uid = int(real_uid_str)
+                            gid = pwd.getpwuid(uid).pw_gid
+                            os.chown(out_path, uid, gid)
+                        except Exception:
+                            pass
+                    return out_path
+        except Exception as e:
+            print(f"[!] Warning: Failed extracting rootfs from {axp_path}: {e}")
+
     return None
 
 def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None, output=None, work_dir=None):
     global _active_mount_point
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
     if output is None:
         output = "NanoKVMPro_Custom.axp"
 
@@ -188,7 +230,7 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
     if blobs_dir and os.path.isdir(blobs_dir):
         print(f"[+] Building AXP directly from repository blobs: {blobs_dir}")
         stage_bootloader_from_blobs(blobs_dir, temp_dir, replacements=replacements, overlay_dir=getattr(args, 'overlay', None))
-        base_rootfs = locate_base_rootfs(rootfs_path, blobs_dir)
+        base_rootfs = locate_base_rootfs(rootfs_path, blobs_dir, axp_file=axp_file)
         if not base_rootfs:
             raise FileNotFoundError(
                 "Base rootfs not found! Expected 'build_dist/ubuntu_rootfs.ext4'. "
@@ -248,6 +290,11 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
         if args.remove_file:
             remove_files(mount_point=mount_point, remove_file_list=args.remove_file)
 
+        sdk_rootfs = os.path.join(repo_root, "support/sdk/meta/build/projects/AX630C_emmc_arm64_k419_sipeed_nanokvm/rootfs")
+        if os.path.isdir(sdk_rootfs):
+            print(f"[+] Applying Sipeed board rootfs overlay from {sdk_rootfs}...")
+            subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks", f"{sdk_rootfs}/", f"{mount_point}/"], check=True)
+
         blobs_rootfs = os.path.join(blobs_dir, "rootfs") if blobs_dir else None
         if blobs_rootfs and os.path.isdir(blobs_rootfs):
             print(f"[+] Applying repository rootfs blobs from {blobs_rootfs}...")
@@ -255,7 +302,9 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
 
         if args.app:
             subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks", f"{args.app}/", f"{mount_point}/root"], check=True)
-            run_chroot_commands(mount_point=mount_point, commands=["dpkg -i /root/*.deb"])
+            run_chroot_commands(mount_point=mount_point, commands=[
+                "dpkg -i /root/*.deb || (apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root update && apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root install -f -y)"
+            ])
             run_chroot_commands(mount_point=mount_point, commands=["rm -f /root/*.deb"])
             run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /root/.kvmcache"])
             subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks", f"{args.app}/", f"{mount_point}/root/.kvmcache"], check=True)
@@ -297,6 +346,14 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
             fi''',
             '''if [ -f /etc/rc.local ]; then
                 sed -i '/192\\.168\\.100\\.200/d' /etc/rc.local
+                chmod 0755 /etc/rc.local
+                chown root:root /etc/rc.local
+                mkdir -p /etc/systemd/system/multi-user.target.wants
+                ln -sf /lib/systemd/system/rc-local.service /etc/systemd/system/multi-user.target.wants/rc-local.service
+            fi''',
+            '''if [ -f /opt/swupdate/bin/fw_printenv ]; then
+                ln -sf /opt/swupdate/bin/fw_printenv /usr/bin/fw_printenv
+                ln -sf fw_printenv /usr/bin/fw_setenv
             fi''',
             "ldconfig"
         ])
