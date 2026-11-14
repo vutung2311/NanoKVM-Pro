@@ -126,6 +126,19 @@ fi
 
 ldconfig
 
+# App logs moved to a tmpfs (var-log-kvmcomm.mount). Drop the copies that
+# piled up on the eMMC before the mount hides them and they can never be freed.
+if ! mountpoint -q /var/log/kvmcomm 2>/dev/null; then
+    rm -f /var/log/kvmcomm/*.log /var/log/kvmcomm/*.log.1
+fi
+
+# journald is volatile; rsyslog would copy the same stream to /var/log on the
+# eMMC with no logrotate. New images do not install it; mask it on older ones.
+rsyslog_masked=0
+if systemctl list-unit-files rsyslog.service 2>/dev/null | grep -q '^rsyslog\.service'; then
+    systemctl mask rsyslog.service >/dev/null 2>&1 && rsyslog_masked=1
+fi
+
 mkdir -p /etc/systemd/system/multi-user.target.wants
 [ -f /etc/systemd/system/kvmcomm.service ] && ln -sf /etc/systemd/system/kvmcomm.service /etc/systemd/system/multi-user.target.wants/kvmcomm.service
 
@@ -138,6 +151,9 @@ if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     if [ "$(stat -c %d:%i /)" == "$(stat -c %d:%i /proc/1/root/.)" ]; then
         systemctl stop wpa_supplicant.service 2>/dev/null || true
+        if [ "$rsyslog_masked" = 1 ]; then
+            systemctl stop rsyslog.service syslog.socket 2>/dev/null || true
+        fi
         # Pick up /etc/ssh/sshd_config.d/10-nanokvm.conf (root password login) without
         # dropping existing sessions; never reload into a config sshd rejects.
         if [ -x /usr/sbin/sshd ] && /usr/sbin/sshd -t 2>/dev/null; then

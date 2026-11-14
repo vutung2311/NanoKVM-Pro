@@ -1,0 +1,11 @@
+[Unit]
+Description=RAM-backed /var/log/kvmcomm (keeps app logs off the eMMC)
+Documentation=man:systemd.mount(5)
+
+[Mount]
+What=tmpfs
+Where=/var/log/kvmcomm
+Type=tmpfs
+# kvmcomm.sh trims each *.log back to its last 256 KiB once it passes 2 MiB;
+# the cap only bounds RAM if that trim stops running.
+Options=mode=0755,size=8M,nosuid,nodev,noexec

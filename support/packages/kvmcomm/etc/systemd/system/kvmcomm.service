@@ -3,6 +3,8 @@ Description=KVM Commom Server
 # /etc/rc.local loads the ax_* media drivers kvm_vin needs. Without this
 # ordering kvm_vin could start first, die, and restart the whole unit.
 After=rc-local.service
+# App logs live on tmpfs (var-log-kvmcomm.mount), not on the eMMC.
+RequiresMountsFor=/var/log/kvmcomm
 
 [Service]
 Type=simple

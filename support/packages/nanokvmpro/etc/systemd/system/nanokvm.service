@@ -1,6 +1,8 @@
 [Unit]
 Description=NanoKVM Service
 After=network.target
+# App logs live on tmpfs (var-log-nanokvm.mount), not on the eMMC.
+RequiresMountsFor=/var/log/nanokvm
 
 [Service]
 Type=simple

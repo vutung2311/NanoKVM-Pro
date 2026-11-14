@@ -226,7 +226,7 @@ apt-get update -o Acquire::ForceIPv4=true
 apt-get install -y --no-install-recommends \
     systemd systemd-sysv libpam-systemd libnss-systemd dbus dbus-user-session \
     locales tzdata ca-certificates sudo kmod net-tools ethtool resolvconf ifupdown \
-    isc-dhcp-server language-pack-en-base htop bc udev ssh rsyslog iputils-ping \
+    isc-dhcp-server language-pack-en-base htop bc udev ssh iputils-ping \
     python3 alsa-utils udhcpd wpasupplicant avahi-daemon chrony i2c-tools spi-tools \
     udhcpc hostapd rsync etherwake bluez evtest usbutils arping arp-scan zstd dosfstools \
     e2fsprogs fdisk wireguard-tools iptables curl wget nano vim-tiny networkd-dispatcher cron dnsmasq-base \
@@ -274,9 +274,10 @@ printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' > /etc/ssh/sshd_confi
 locale-gen en_US.UTF-8
 update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-# Volatile journald to preserve flash
+# Volatile journald to preserve flash. No rsyslog: it would copy the same
+# stream to /var/log on the eMMC, with no logrotate to bound it.
 mkdir -p /etc/systemd/journald.conf.d
-printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' > /etc/systemd/journald.conf.d/00-volatile.conf
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\nForwardToSyslog=no\n' > /etc/systemd/journald.conf.d/00-volatile.conf
 
 # Delegate eth0 dynamically to ifplugd on physical cable carrier, preventing boot dhclient loops.
 # Only when ifplugd is actually present; otherwise ifupdown must keep bringing eth0 up.
