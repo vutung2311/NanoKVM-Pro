@@ -61,7 +61,7 @@ func (s *Service) SetMode(c *gin.Context) {
 		return
 	}
 
-	common.GetScreen().StreamType = streamType
+	common.GetScreen().Update(func(s *common.Screen) { s.StreamType = streamType })
 	common.GetKvmVision().SetStreamType(uint8(streamType))
 
 	rsp.OkRsp(c)
@@ -85,11 +85,13 @@ func (s *Service) SetQuality(c *gin.Context) {
 	}
 
 	value := uint16(req.Quality)
-	if req.Quality <= 100 {
-		screen.Quality = value
-	} else {
-		screen.BitRate = value
-	}
+	screen.Update(func(s *common.Screen) {
+		if req.Quality <= 100 {
+			s.Quality = value
+		} else {
+			s.BitRate = value
+		}
+	})
 
 	rsp.OkRsp(c)
 	log.Debugf("update quality to %d", req.Quality)
@@ -117,7 +119,7 @@ func (s *Service) SetGop(c *gin.Context) {
 		return
 	}
 
-	common.GetScreen().GOP = gop
+	common.GetScreen().Update(func(s *common.Screen) { s.GOP = gop })
 
 	rsp.OkRsp(c)
 	log.Debugf("update GOP to %d", req.Gop)
@@ -145,7 +147,7 @@ func (s *Service) SetFps(c *gin.Context) {
 		return
 	}
 
-	common.GetScreen().FPS = fps
+	common.GetScreen().Update(func(s *common.Screen) { s.FPS = fps })
 	rsp.OkRsp(c)
 	log.Debugf("update FPS to %d", req.Fps)
 }

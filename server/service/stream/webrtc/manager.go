@@ -123,8 +123,8 @@ func (m *WebRTCManager) sendVideoStream() {
 			continue
 		}
 
-		screen.Check()
-		data, result := vision.ReadH264(screen.Width, screen.Height, screen.BitRate)
+		params := screen.Check()
+		data, result := vision.ReadH264(params.Width, params.Height, params.BitRate)
 		m.updateStatus(result)
 
 		if result < 0 || len(data) == 0 {

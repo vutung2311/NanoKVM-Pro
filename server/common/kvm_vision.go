@@ -249,3 +249,50 @@ func (k *KvmVision) Close() {
 	C.kvmv_deinit()
 	log.Debugf("stop kvm vision...")
 }
+
+// readFrameTo reads one encoded frame and copies it straight into the buffer
+// alloc returns (sized n), so the caller's outgoing message is filled with a
+// single copy. alloc is not called when there is no frame. It returns the
+// frame size and the library's result code.
+func (k *KvmVision) readFrameTo(width, height uint16, imgType uint8, param uint16, alloc func(n int) []byte) (n int, result int) {
+	var (
+		kvmData  *C.uint8_t
+		dataSize C.uint32_t
+	)
+
+	result = int(C.kvmv_read_img(
+		C.uint16_t(width),
+		C.uint16_t(height),
+		C.uint8_t(imgType),
+		C.uint16_t(param),
+		&kvmData,
+		&dataSize,
+	))
+	if result < 0 {
+		log.Errorf("failed to read frame (type %d): %d", imgType, result)
+		return 0, result
+	}
+	if kvmData == nil || dataSize == 0 {
+		return 0, result
+	}
+
+	n = int(dataSize)
+	dst := alloc(n)
+	copy(dst[:n], unsafe.Slice((*byte)(unsafe.Pointer(kvmData)), n))
+	return n, result
+}
+
+// ReadMjpegTo is ReadMjpegInto with a single copy into alloc's buffer.
+func (k *KvmVision) ReadMjpegTo(width, height, quality uint16, alloc func(n int) []byte) (int, int) {
+	return k.readFrameTo(width, height, IMG_MJPEG_TYPE, quality, alloc)
+}
+
+// ReadH264To is ReadH264Into with a single copy into alloc's buffer.
+func (k *KvmVision) ReadH264To(width, height, bitRate uint16, alloc func(n int) []byte) (int, int) {
+	return k.readFrameTo(width, height, IMG_H264_TYPE_SPS, bitRate, alloc)
+}
+
+// ReadH265To is ReadH265Into with a single copy into alloc's buffer.
+func (k *KvmVision) ReadH265To(width, height, bitRate uint16, alloc func(n int) []byte) (int, int) {
+	return k.readFrameTo(width, height, IMG_H265_TYPE_SPS, bitRate, alloc)
+}

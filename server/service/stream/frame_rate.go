@@ -38,7 +38,8 @@ func GetFrameRateCounter() *FrameRateCounter {
 
 				counter.mutex.Unlock()
 
-				screen.RealFPS = int(counter.fps)
+				fps := int(counter.fps)
+				screen.Update(func(s *common.Screen) { s.RealFPS = fps })
 			}
 		}()
 	})
@@ -59,7 +60,7 @@ func (f *FrameRateCounter) GetFPS() int32 {
 
 func GetStreamTickerDuration() time.Duration {
 	screen := common.GetScreen()
-	targetFps := int(screen.FPS)
+	targetFps := int(screen.Snapshot().FPS)
 	if targetFps <= 0 {
 		if hwFps := common.GetKvmVision().GetFps(); hwFps > 0 && hwFps <= 120 {
 			targetFps = hwFps

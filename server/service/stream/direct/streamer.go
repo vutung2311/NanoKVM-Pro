@@ -67,38 +67,45 @@ func (s *Streamer) run() {
 			continue
 		}
 
-		screen.Check()
-		bufPtr := stream.FrameBufferPool.Get().(*[]byte)
-		data, result := vision.ReadH264Into(screen.Width, screen.Height, screen.BitRate, bufPtr)
-		if result < 0 || len(data) == 0 {
-			stream.PutFrameBuffer(bufPtr)
+		params := screen.Check()
+		// One copy: the encoder output goes straight into the message after
+		// its 9-byte header (see packFrame for the layout).
+		var msg *fanout.Msg
+		n, result := vision.ReadH264To(params.Width, params.Height, params.BitRate, func(n int) []byte {
+			msg = fanout.NewMsg(frameHeaderLen+n, false)
+			return msg.Data[frameHeaderLen:]
+		})
+		if result < 0 || n == 0 {
+			if msg != nil {
+				msg.Release()
+			}
 			continue
 		}
-
-		isKeyFrame := byte(0)
-		if result == 3 {
-			isKeyFrame = byte(1)
-		}
-
-		timestamp := time.Since(startTime).Microseconds()
-
-		s.hub.Broadcast(packFrame(isKeyFrame == 1, timestamp, data))
-		stream.PutFrameBuffer(bufPtr)
+		writeFrameHeader(msg, result == 3, time.Since(startTime).Microseconds())
+		s.hub.Broadcast(msg)
 
 		stream.GetFrameRateCounter().Update()
 	}
 }
 
-// packFrame builds the wire message: 1 byte keyframe flag, 8 bytes
-// little-endian timestamp (µs), then the encoded frame.
-func packFrame(key bool, timestamp int64, data []byte) *fanout.Msg {
-	m := fanout.NewMsg(9+len(data), key)
+// Wire format of one message: 1 byte keyframe flag, 8 bytes little-endian
+// timestamp (µs), then the encoded frame.
+const frameHeaderLen = 9
+
+func writeFrameHeader(m *fanout.Msg, key bool, timestamp int64) {
+	m.Key = key
 	if key {
 		m.Data[0] = 1
 	} else {
 		m.Data[0] = 0
 	}
-	binary.LittleEndian.PutUint64(m.Data[1:9], uint64(timestamp))
-	copy(m.Data[9:], data)
+	binary.LittleEndian.PutUint64(m.Data[1:frameHeaderLen], uint64(timestamp))
+}
+
+// packFrame builds a message from an already-read frame.
+func packFrame(key bool, timestamp int64, data []byte) *fanout.Msg {
+	m := fanout.NewMsg(frameHeaderLen+len(data), key)
+	copy(m.Data[frameHeaderLen:], data)
+	writeFrameHeader(m, key, timestamp)
 	return m
 }
