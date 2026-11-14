@@ -1259,9 +1259,12 @@ disconnect_wifi() {
     if [[ -S "/run/wpa_supplicant/$WIFI_IFACE" ]]; then
         start_service
 
-        local networks=$(list_networks)
-        local network_ssid=$(echo "$networks" | grep -o '{"ssid":"[^"]*","flags":"CURRENT"}' | sed -n 's/.*"ssid":"\([^"]*\)".*/\1/p')
-        local network_id=$(wpa_cli -i "$WIFI_IFACE" list_networks | grep '\[CURRENT\]' | awk '{print $1}')
+        # Straight from wpa_cli's tab-separated list: matching the JSON from
+        # list_networks with [^"]* lost SSIDs that contain '"' (printed as \").
+        local current network_id network_ssid
+        current=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' 'NR>1 && index($4, "[CURRENT]") {print $1 "\t" $2; exit}')
+        network_id="${current%%$'\t'*}"
+        network_ssid="${current#*$'\t'}"
 
         if [[ -n "$network_id" && -n "$network_ssid" ]]; then
             local unescaped_current=$(unescape_non_ascii "$network_ssid")

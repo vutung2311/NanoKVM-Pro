@@ -434,8 +434,15 @@ if [ -f "$HDMI_PASSTHROUGH_CONF" ]; then
     fi
 fi
 
-ver=$(cat /boot/ver | awk -F- '{print $5}' | sed 's/^v//')
-if ! version_lt "$ver" "1.0.12"; then
+# WireGuard needs firmware 1.0.12 or later. Take the version from its vX.Y.Z
+# token: the old awk -F- '{print $5}' picked a date field of /boot/ver. A
+# version that cannot be parsed (custom builds) loads the module, as
+# check_firmware_update has already brought stock firmware up to date.
+fw_ver=""
+if [[ -f /boot/ver && "$(</boot/ver)" =~ v([0-9]+(\.[0-9]+)*) ]]; then
+    fw_ver="${BASH_REMATCH[1]}"
+fi
+if [ -z "$fw_ver" ] || ! version_lt "$fw_ver" "1.0.12"; then
     load_ko /kvmcomm/ko/wireguard.ko
 fi
 
