@@ -279,6 +279,44 @@ write_report_desc() {
     fi
 }
 
+# Mount point on the device for a mass-storage backing store, if it has one.
+backing_mountpoint() {
+    case "$1" in
+    /exfat.img) echo /data ;;
+    /dev/mmcblk1p1) echo /sdcard ;;
+    esac
+}
+
+# Export a backing store to the host as $lun_dir. The device must not write a
+# filesystem the host is writing too, so its own mount is switched to
+# read-only first. If that fails (a file is open for writing), the host gets
+# the disk read-only instead.
+export_backing_store() {
+    local lun_dir="$1" backing="$2" mnt
+    mnt=$(backing_mountpoint "$backing")
+    if [ -n "$mnt" ] && mountpoint -q "$mnt"; then
+        sync
+        if ! findmnt -n -o OPTIONS "$mnt" | grep -qE '(^|,)ro(,|$)' && \
+           ! mount -o remount,ro "$mnt"; then
+            echo "Warning: $mnt is busy on the device; exporting $backing read-only"
+            echo 1 > "$lun_dir/ro"
+        fi
+    fi
+    echo "$backing" > "$lun_dir/file"
+}
+
+# After the host lets go of a backing store, remount the device's view from
+# scratch: its cache predates whatever the host wrote.
+release_backing_store() {
+    local backing="$1" mnt unit
+    mnt=$(backing_mountpoint "$backing")
+    [ -n "$mnt" ] || return 0
+    unit=$(systemd-escape -p --suffix=mount "$mnt")
+    if systemctl -q is-active "$unit" || systemctl -q is-enabled "$unit" 2>/dev/null; then
+        systemctl restart "$unit" || echo "Warning: failed to remount $mnt"
+    fi
+}
+
 hid_start() {
     if [ -d "/sys/kernel/config/usb_gadget/g0" ]; then
         echo "USB gadget g0 already exists; stopping first..."
@@ -461,9 +499,9 @@ hid_start() {
 
         if ( [ -e /boot/usb.disk1.sd ] || [ -e /boot/usb.disk1 ] ) && \
            [ -e /dev/mmcblk1p1 ]; then
-            echo /dev/mmcblk1p1 > functions/mass_storage.disk1/lun.0/file
+            export_backing_store functions/mass_storage.disk1/lun.0 /dev/mmcblk1p1
         elif [ -e /boot/usb.disk1.emmc ] && [ -e /exfat.img ]; then
-            echo /exfat.img > functions/mass_storage.disk1/lun.0/file
+            export_backing_store functions/mass_storage.disk1/lun.0 /exfat.img
         fi
     fi
 
@@ -639,10 +677,13 @@ hid_stop() {
         rmdir "$GADGET_PATH/configs/c.2"
     fi
 
+    local released=()
     for func in hid.GS0 hid.GS1 hid.GS2 acm.usb0 rndis.usb0 ncm.usb0 mass_storage.disk0 mass_storage.disk1 Loopback.0 SourceSink.0 uac2.usb0; do
         if [ -d "$GADGET_PATH/functions/$func" ]; then
-            [ "$func" = "mass_storage.disk0" ] || [ "$func" = "mass_storage.disk1" ] &&
+            if [ "$func" = "mass_storage.disk0" ] || [ "$func" = "mass_storage.disk1" ]; then
+                released+=("$(cat "$GADGET_PATH/functions/$func/lun.0/file" 2>/dev/null)")
                 echo "" > "$GADGET_PATH/functions/$func/lun.0/file"
+            fi
             rmdir "$GADGET_PATH/functions/$func"
         fi
     done
@@ -654,6 +695,11 @@ hid_stop() {
     if [ -d "$GADGET_PATH" ]; then
         rmdir "$GADGET_PATH" || echo "Warning: Failed to remove gadget directory"
     fi
+
+    local backing
+    for backing in "${released[@]}"; do
+        [ -n "$backing" ] && release_backing_store "$backing"
+    done
 
     if [ -e /boot/usb.hard_reset ]; then
         echo "8000000.dwc3" > /sys/bus/platform/drivers/dwc3/unbind
