@@ -77,3 +77,47 @@ func GetStreamTickerDuration() time.Duration {
 
 	return time.Second / time.Duration(pollRate)
 }
+
+// pollRefreshInterval is how often a running stream re-reads its target fps,
+// so an fps change (setting or HDMI input) applies without reconnecting.
+const pollRefreshInterval = 2 * time.Second
+
+// PollTicker paces a stream's encoder reads at GetStreamTickerDuration and
+// follows changes to it while the stream runs.
+type PollTicker struct {
+	t       *time.Ticker
+	d       time.Duration
+	checked time.Time
+	compute func() time.Duration
+}
+
+func NewPollTicker() *PollTicker {
+	return newPollTicker(GetStreamTickerDuration)
+}
+
+func newPollTicker(compute func() time.Duration) *PollTicker {
+	d := compute()
+	return &PollTicker{t: time.NewTicker(d), d: d, checked: time.Now(), compute: compute}
+}
+
+// C is the tick channel; it stays the same across Refresh.
+func (p *PollTicker) C() <-chan time.Time { return p.t.C }
+
+// Refresh re-reads the target rate at most every pollRefreshInterval and
+// resets the ticker if it changed. Call it from the loop that reads C.
+func (p *PollTicker) Refresh() {
+	now := time.Now()
+	if now.Sub(p.checked) < pollRefreshInterval {
+		return
+	}
+	p.checked = now
+	if d := p.compute(); d > 0 && d != p.d {
+		p.d = d
+		p.t.Reset(d)
+	}
+}
+
+// Interval returns the current tick interval.
+func (p *PollTicker) Interval() time.Duration { return p.d }
+
+func (p *PollTicker) Stop() { p.t.Stop() }

@@ -1,6 +1,7 @@
 package direct
 
 import (
+	"NanoKVM-Server/service/stream/fanout"
 	"net/http"
 	"time"
 
@@ -32,8 +33,9 @@ func Connect(c *gin.Context) {
 
 	_ = ws.SetReadDeadline(time.Time{})
 
-	streamer.addClient(ws)
-	defer streamer.removeClient(ws)
+	client := streamer.addClient()
+	defer streamer.removeClient(client)
+	go fanout.ServeWebsocket(ws, client)
 
 	for {
 		if _, _, err := ws.ReadMessage(); err != nil {

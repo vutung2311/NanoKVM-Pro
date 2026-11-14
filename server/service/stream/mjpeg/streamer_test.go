@@ -1,9 +1,13 @@
 package mjpeg
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -12,14 +16,28 @@ func init() {
 	gin.SetMode(gin.TestMode)
 }
 
+// lockedRecorder lets the test read the body while serve writes it.
+type lockedRecorder struct {
+	*httptest.ResponseRecorder
+	mu sync.Mutex
+}
+
+func (r *lockedRecorder) Write(b []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ResponseRecorder.Write(b)
+}
+
+func (r *lockedRecorder) contains(sub []byte) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return bytes.Contains(r.Body.Bytes(), sub)
+}
+
 func TestStreamer_ClientLifecycle(t *testing.T) {
 	s := NewStreamer()
 
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request, _ = http.NewRequest(http.MethodGet, "/stream/mjpeg", nil)
-
-	s.AddClient(c)
+	c := s.AddClient()
 	if count := s.getClientCount(); count != 1 {
 		t.Fatalf("expected 1 client after AddClient, got %d", count)
 	}
@@ -28,55 +46,48 @@ func TestStreamer_ClientLifecycle(t *testing.T) {
 	if count := s.getClientCount(); count != 0 {
 		t.Fatalf("expected 0 clients after RemoveClient, got %d", count)
 	}
-
-	// send with nil clients slice must not panic
-	s.send(nil, []byte{0xFF, 0xD8, 0xFF})
 }
 
-func TestWriteClientFrame(t *testing.T) {
-	data := []byte("--frame\r\ntest\r\n")
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request, _ = http.NewRequest(http.MethodGet, "/stream/mjpeg", nil)
-
-	if err := writeClientFrame(c, data); err != nil {
-		t.Fatalf("unexpected error for valid context: %v", err)
-	}
-	if w.Body.String() != string(data) {
-		t.Fatalf("expected written body %q, got %q", string(data), w.Body.String())
+func TestPackFrame(t *testing.T) {
+	m := packFrame([]byte{0xFF, 0xD8, 0xFF})
+	defer m.Release()
+	want := "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 3\r\n\r\n\xff\xd8\xff\r\n"
+	if string(m.Data) != want {
+		t.Fatalf("packFrame = %q, want %q", m.Data, want)
 	}
 }
 
-func BenchmarkMjpegStreamer_Send(b *testing.B) {
+// The handler goroutine writes broadcast frames and stops when the request
+// ends, so nothing writes to the context after the handler returns.
+func TestServeWritesUntilRequestEnds(t *testing.T) {
 	s := NewStreamer()
-	frameData := make([]byte, 64*1024) // 64KB mock JPEG frame
+	client := s.AddClient()
+	defer s.RemoveClient(client)
 
-	w := httptest.NewRecorder()
+	w := &lockedRecorder{ResponseRecorder: httptest.NewRecorder()}
 	c, _ := gin.CreateTestContext(w)
-	c.Request, _ = http.NewRequest(http.MethodGet, "/stream/mjpeg", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Request, _ = http.NewRequestWithContext(ctx, http.MethodGet, "/stream/mjpeg", nil)
 
-	clients := []*gin.Context{c}
+	served := make(chan struct{})
+	go func() {
+		serve(c, client)
+		close(served)
+	}()
 
-	b.ResetTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		w.Body.Reset()
-		s.send(clients, frameData)
-	}
-}
-
-func BenchmarkMjpegStreamer_GetClients(b *testing.B) {
-	s := NewStreamer()
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	s.AddClient(c)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_ = s.getClients()
+	s.hub.Broadcast(packFrame([]byte("jpeg")))
+	deadline := time.Now().Add(2 * time.Second)
+	for !w.contains([]byte("jpeg")) {
+		if time.Now().After(deadline) {
+			t.Fatal("frame was not written")
 		}
-	})
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-served:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serve did not return after the request ended")
+	}
 }
