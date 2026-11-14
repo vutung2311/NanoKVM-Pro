@@ -449,7 +449,7 @@ deploy: deb
 	echo -e "$(CYAN)==> Copying nanokvm package to root@$$TARGET_IP:/tmp/...$(RESET)"; \
 	scp $(DIST_DIR)/nanokvmpro_$(VERSION)_arm64.deb root@$$TARGET_IP:/tmp/; \
 	echo -e "$(CYAN)==> Installing nanokvm package and restarting service on $$TARGET_IP...$(RESET)"; \
-	ssh root@$$TARGET_IP "dpkg -i /tmp/nanokvmpro_$(VERSION)_arm64.deb && /kvmapp/scripts/usbdev.sh restart && systemctl restart nanokvm && rm -f /tmp/nanokvmpro_$(VERSION)_arm64.deb"; \
+	ssh root@$$TARGET_IP "DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold -i /tmp/nanokvmpro_$(VERSION)_arm64.deb && /kvmapp/scripts/usbdev.sh restart && systemctl restart nanokvm && rm -f /tmp/nanokvmpro_$(VERSION)_arm64.deb"; \
 	echo -e "$(GREEN)[✓] Deployment to $$TARGET_IP completed successfully!$(RESET)"
 
 ## Deploy both nanokvm and low-level kvmcomm packages (WARNING: kvmcomm restarts video kernel drivers; requires reboot)
@@ -463,7 +463,7 @@ deploy-all: deb
 	echo -e "$(CYAN)==> Copying all deb packages to root@$$TARGET_IP:/tmp/...$(RESET)"; \
 	scp $(DIST_DIR)/nanokvmpro_$(VERSION)_arm64.deb $(DIST_DIR)/kvmcomm_$(VERSION)_arm64.deb root@$$TARGET_IP:/tmp/; \
 	echo -e "$(CYAN)==> Installing packages and restarting services on $$TARGET_IP...$(RESET)"; \
-	ssh root@$$TARGET_IP "dpkg -i /tmp/nanokvmpro_$(VERSION)_arm64.deb /tmp/kvmcomm_$(VERSION)_arm64.deb && /kvmapp/scripts/usbdev.sh restart && systemctl restart nanokvm && rm -f /tmp/*_arm64.deb"; \
+	ssh root@$$TARGET_IP "DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold -i /tmp/nanokvmpro_$(VERSION)_arm64.deb /tmp/kvmcomm_$(VERSION)_arm64.deb && /kvmapp/scripts/usbdev.sh restart && systemctl restart nanokvm && rm -f /tmp/*_arm64.deb"; \
 	echo -e "$(GREEN)[✓] Full deployment to $$TARGET_IP completed successfully!$(RESET)"
 
 # ------------------------------------------------------------------------------

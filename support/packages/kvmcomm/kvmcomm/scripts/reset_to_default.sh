@@ -219,7 +219,7 @@ reinstall_packages() {
         echo "Reinstalling $pkg package: $(basename "$deb")"
         ok=0
         for attempt in 1 2; do
-            if DEBIAN_FRONTEND=noninteractive dpkg -i --force-confmiss "$deb" 2>>"$TMP_LOG_FILE"; then
+            if DEBIAN_FRONTEND=noninteractive dpkg -i --force-confmiss --force-confdef --force-confold "$deb" 2>>"$TMP_LOG_FILE"; then
                 ok=1
                 break
             fi
@@ -235,7 +235,7 @@ reinstall_packages() {
     done
 
     echo "$(date) - Running dpkg --configure -a" >>"$LOG_FILE"
-    DEBIAN_FRONTEND=noninteractive dpkg --configure -a >>"$LOG_FILE" 2>&1 || failed=1
+    DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold --configure -a >>"$LOG_FILE" 2>&1 || failed=1
     return $failed
 }
 

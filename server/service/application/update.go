@@ -169,7 +169,9 @@ func install(dir string, version string) error {
 				log.Debugf("retry installing %s %d/%d", appName, attempt+1, maxTries)
 				time.Sleep(time.Duration(attempt) * time.Second)
 			}
-			cmd := exec.Command("dpkg", "-i", filePath)
+			// No terminal here: never stop at a conffile prompt. Take the
+			// maintainer's version of unmodified files, keep local edits.
+			cmd := exec.Command("dpkg", "--force-confdef", "--force-confold", "-i", filePath)
 			cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 			outputBuffer := &limitedCommandOutput{limit: 8 << 10}
 			cmd.Stdout = outputBuffer
