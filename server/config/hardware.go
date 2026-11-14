@@ -15,8 +15,10 @@ const (
 
 	HWVersionFile = "/proc/lt6911_info/version"
 
-	DefaultDeskDeviceNumber = "NebE20020"
-	DefaultATXDeviceNumber  = "NxaL020020"
+	// UnknownDeviceNumber is reported when neither the hardware nor a
+	// configured file identifies the device; a made-up real-looking number
+	// would be indistinguishable from a genuine one.
+	UnknownDeviceNumber = "Unknown"
 )
 
 var DeviceNumberFiles = []string{
@@ -71,11 +73,7 @@ func DeviceNumber() string {
 		}
 	}
 
-	// 3. Fallback to model-appropriate product identity
-	if GetHwVersion() == HWVersionATX {
-		return DefaultATXDeviceNumber
-	}
-	return DefaultDeskDeviceNumber
+	return UnknownDeviceNumber
 }
 
 func GetHwVersion() HWVersion {

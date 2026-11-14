@@ -15,11 +15,11 @@ func TestDeviceNumber(t *testing.T) {
 		DeviceNumberFiles = origFiles
 	}()
 
-	t.Run("returns canonical fallback when no files exist", func(t *testing.T) {
+	t.Run("reports Unknown when no files exist", func(t *testing.T) {
 		DeviceNumberFiles = []string{filepath.Join(tmpDir, "nonexistent")}
 		pn := DeviceNumber()
-		if pn != DefaultDeskDeviceNumber {
-			t.Fatalf("expected %q, got %q", DefaultDeskDeviceNumber, pn)
+		if pn != UnknownDeviceNumber {
+			t.Fatalf("expected %q, got %q", UnknownDeviceNumber, pn)
 		}
 	})
 
@@ -44,8 +44,8 @@ func TestDeviceNumber(t *testing.T) {
 		DeviceNumberFiles = []string{overrideFile}
 
 		pn := DeviceNumber()
-		if pn != DefaultDeskDeviceNumber {
-			t.Fatalf("expected %q, got %q", DefaultDeskDeviceNumber, pn)
+		if pn != UnknownDeviceNumber {
+			t.Fatalf("expected %q, got %q", UnknownDeviceNumber, pn)
 		}
 	})
 }
