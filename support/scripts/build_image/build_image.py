@@ -303,7 +303,44 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
         if args.app:
             subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks", f"{args.app}/", f"{mount_point}/root"], check=True)
             run_chroot_commands(mount_point=mount_point, commands=[
-                "export DEBIAN_FRONTEND=noninteractive; dpkg --force-confdef --force-confold -i /root/*.deb || (apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root update && apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -f -y)"
+                # Some vendor .deb postinst/prerm scripts (e.g. pikvm) call bare
+                # `systemctl` under `set -e` with no fallback. This chroot has no
+                # systemd running as PID 1, so systemctl aborts with "System has
+                # not been booted with systemd", killing the whole dpkg install.
+                # Stub it out for the install only: query subcommands report
+                # "inactive"/"disabled", everything else (daemon-reload, enable,
+                # start, ...) is a no-op. Service enablement is done via explicit
+                # symlinks elsewhere in this script, not via systemctl.
+                # Every call the stub sees is logged (not just the ones we
+                # recognize) so an unexpected subcommand from a future vendor
+                # .deb update is visible in the build log instead of being
+                # silently swallowed by the catch-all no-op case below.
+                '''if [ -x /usr/bin/systemctl ] && [ ! -e /usr/bin/systemctl.real ]; then
+                    mv /usr/bin/systemctl /usr/bin/systemctl.real
+                    rm -f /var/log/systemctl-stub.log
+                    printf '#!/bin/sh\\necho "$*" >> /var/log/systemctl-stub.log\\ncase "$1" in\\n  is-active|is-enabled|is-failed|status) exit 1 ;;\\n  *) exit 0 ;;\\nesac\\n' > /usr/bin/systemctl
+                    chmod 755 /usr/bin/systemctl
+                fi''',
+                # pikvm's postinst also shells out to a bare `python`/`pip` to
+                # install its bundled ruamel.yaml wheel. This minimised rootfs
+                # only carries python3 (no unqualified `python`, no pip at all),
+                # so that call fails with "command not found" (exit 127) under
+                # the same `set -e`. Only pull these in when a pikvm .deb is
+                # actually staged, so other builds don't pay for them.
+                '''if ls /root/pikvm_*.deb >/dev/null 2>&1; then
+                    (apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root update && \
+                     apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root install -y python3-pip python-is-python3) \
+                    || echo "[!] Warning: could not install python3-pip for pikvm (postinst may fail)"
+                fi''',
+                "export DEBIAN_FRONTEND=noninteractive; dpkg --force-confdef --force-confold -i /root/*.deb || (apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root update && apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -f -y)",
+                '''if [ -e /usr/bin/systemctl.real ]; then
+                    mv -f /usr/bin/systemctl.real /usr/bin/systemctl
+                fi''',
+                '''if [ -s /var/log/systemctl-stub.log ]; then
+                    echo "[*] systemctl calls stubbed during package install (review for anything unexpected):"
+                    sort -u /var/log/systemctl-stub.log
+                    rm -f /var/log/systemctl-stub.log
+                fi'''
             ])
             run_chroot_commands(mount_point=mount_point, commands=["rm -f /root/*.deb"])
             run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /root/.kvmcache"])
