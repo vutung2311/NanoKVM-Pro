@@ -71,7 +71,7 @@ def install_exfatprogs():
         sys.exit(1)
 
     log("Installing exfatprogs package...")
-    install_result = run(f"dpkg -i {deb_file}", check=False, timeout=30)
+    install_result = run(f"DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold -i {deb_file}", check=False, timeout=30)
     if install_result != 0:
         log("ERROR: Failed to install exfatprogs package.")
         sys.exit(1)

@@ -303,7 +303,7 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
         if args.app:
             subprocess.run(SUDO + ["rsync", "-av", "--keep-dirlinks", f"{args.app}/", f"{mount_point}/root"], check=True)
             run_chroot_commands(mount_point=mount_point, commands=[
-                "dpkg -i /root/*.deb || (apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root update && apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root install -f -y)"
+                "export DEBIAN_FRONTEND=noninteractive; dpkg --force-confdef --force-confold -i /root/*.deb || (apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root update && apt-get -o Acquire::ForceIPv4=true -o APT::Sandbox::User=root -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -f -y)"
             ])
             run_chroot_commands(mount_point=mount_point, commands=["rm -f /root/*.deb"])
             run_chroot_commands(mount_point=mount_point, commands=["mkdir -p /root/.kvmcache"])

@@ -224,6 +224,7 @@ sed -i 's@http://archive.ubuntu.com/ubuntu/@http://ports.ubuntu.com/ubuntu-ports
 
 apt-get update -o Acquire::ForceIPv4=true
 apt-get install -y --no-install-recommends \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
     systemd systemd-sysv libpam-systemd libnss-systemd dbus dbus-user-session \
     locales tzdata ca-certificates sudo kmod net-tools ethtool resolvconf ifupdown \
     isc-dhcp-server language-pack-en-base htop bc udev ssh iputils-ping \
