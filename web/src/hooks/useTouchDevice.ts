@@ -1,18 +1,6 @@
 import { useEffect, useState } from 'react';
 
-function detectTouchDevice(): boolean {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-
-  if (window.matchMedia('(pointer: coarse)').matches) {
-    return true;
-  }
-
-  // Fallback for mobile WebViews that omit pointer media queries
-  const hasFinePointer = window.matchMedia('(pointer: fine)').matches;
-  return !hasFinePointer && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
-}
+import { detectTouchDevice } from '@/lib/touch-device.ts';
 
 export function useTouchDevice(): boolean {
   const [isTouchDevice, setIsTouchDevice] = useState<boolean>(detectTouchDevice);

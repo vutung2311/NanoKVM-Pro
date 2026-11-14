@@ -13,6 +13,7 @@ import {
   showMobileMouseButtonsAtom,
   touchModeAtom
 } from '@/jotai/mouse';
+import { hasTouchInput } from '@/lib/touch-device.ts';
 import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 import { MenuItem } from '@/components/menu-item.tsx';
 
@@ -27,6 +28,8 @@ import { TouchMode } from './touch-mode.tsx';
 export const Mouse = () => {
   const { t } = useTranslation();
   const isTouchDevice = useTouchDevice();
+  // Touch handlers run on every device, so a touchscreen laptop needs the mode menu too.
+  const showTouchMenu = isTouchDevice || hasTouchInput();
 
   const setMouseStyle = useSetAtom(mouseStyleAtom);
   const setMouseMode = useSetAtom(mouseModeAtom);
@@ -69,7 +72,7 @@ export const Mouse = () => {
 
   const content = (
     <div className="flex flex-col space-y-1">
-      {isTouchDevice && (
+      {showTouchMenu && (
         <>
           <TouchMode />
           <Divider style={{ margin: '8px 0' }} />
