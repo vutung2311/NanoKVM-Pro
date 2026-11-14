@@ -20,12 +20,83 @@ import (
 
 const (
 	WiFiScript = "/kvmcomm/scripts/wifi.sh"
+
+	maxSSIDLen = 32 // bytes (IEEE 802.11)
+	minPSKLen  = 8  // WPA passphrase, bytes
+	maxPSKLen  = 63
+	hexPSKLen  = 64 // raw PSK as hex
 )
 
 var (
 	WiFiApPassFile  = "/tmp/ap.pass"
 	HostapdConfFile = "/dev/shm/tmp/wifi/hostapd.conf"
+	WiFiConfigFlag  = "/tmp/wifi_config"
+
+	// wifiScriptPath is the script connect() runs; a var so tests can point it
+	// at a stub.
+	wifiScriptPath = WiFiScript
+
+	// connectTimeout bounds "wifi.sh connect_start". The script's own worst
+	// case (association wait + bounded DHCP probe + non-blocking rollback) is
+	// ~26-32 s, see the budget comment above ASSOC_WAIT in wifi.sh; the slack
+	// covers waiting for the script's lock. On timeout the process group gets
+	// SIGTERM (the script then rolls back to the previous network itself) and
+	// SIGKILL only after connectTermGrace.
+	connectTimeout   = 45 * time.Second
+	connectTermGrace = 5 * time.Second
+
+	// Post-connect check; vars so tests can stub them.
+	wifiConnectedFn    = isWifiConnected
+	connectPollRetries = 5
+	connectPollDelay   = 2 * time.Second
+
+	errConnectTimeout = errors.New("connect wifi timeout")
 )
+
+// validateWifiCredentials rejects input that wpa_supplicant cannot accept
+// (or that cannot round-trip through wpa_cli / wpa_supplicant.conf) before
+// anything touches the current connection. An empty password means an open
+// network.
+func validateWifiCredentials(ssid, password string) error {
+	if ssid == "" || len(ssid) > maxSSIDLen {
+		return fmt.Errorf("ssid must be 1-%d bytes", maxSSIDLen)
+	}
+	if hasControlChars(ssid) {
+		return errors.New("ssid contains control characters")
+	}
+	if password == "" {
+		return nil
+	}
+	if len(password) == hexPSKLen && isHex(password) {
+		return nil
+	}
+	if len(password) < minPSKLen || len(password) > maxPSKLen {
+		return fmt.Errorf("password must be %d-%d characters or %d hex digits", minPSKLen, maxPSKLen, hexPSKLen)
+	}
+	if hasControlChars(password) {
+		return errors.New("password contains control characters")
+	}
+	return nil
+}
+
+func hasControlChars(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func isHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
 
 func (s *Service) GetWifi(c *gin.Context) {
 	var rsp proto.Response
@@ -66,19 +137,20 @@ func (s *Service) ConnectWifiNoAuth(c *gin.Context) {
 	var req proto.ConnectWifiReq
 	var rsp proto.Response
 
-	// Check Wi-Fi configuration mode (valid if actively in AP mode or flag file present)
-	if !isAPMode() {
-		if _, err := os.Stat("/tmp/wifi_config"); err != nil {
-			rsp.ErrRsp(c, -1, "invalid mode")
-			return
-		}
-	}
-
-	// Verify AP Password
+	// Verify the AP password first: it only reads two small files, whereas
+	// the mode check below spawns pgrep and wpa_cli.
 	apKey := c.GetHeader("X-AP-Key")
 	if !verifyApPassword(apKey) {
 		time.Sleep(2 * time.Second)
 		rsp.ErrRsp(c, -4, "unauthorized")
+		return
+	}
+
+	// Check Wi-Fi configuration mode (flag file present, or actively in AP
+	// mode). Same rule as before; only the order changed so the cheap stat
+	// runs before isAPMode.
+	if !isWifiConfigMode() {
+		rsp.ErrRsp(c, -1, "invalid mode")
 		return
 	}
 
@@ -87,7 +159,10 @@ func (s *Service) ConnectWifiNoAuth(c *gin.Context) {
 		return
 	}
 
-	_ = exec.Command(WiFiScript, "connect_stop").Run()
+	if err := validateWifiCredentials(req.Ssid, req.Password); err != nil {
+		rsp.ErrRsp(c, -2, "invalid parameters: "+err.Error())
+		return
+	}
 
 	if err := connect(req.Ssid, req.Password); err != nil {
 		rsp.ErrRsp(c, -3, "set wifi failed")
@@ -101,16 +176,16 @@ func (s *Service) ConnectWifiNoAuth(c *gin.Context) {
 func (s *Service) VerifyApLogin(c *gin.Context) {
 	var rsp proto.Response
 
-	if !isAPMode() {
-		time.Sleep(2 * time.Second)
-		rsp.ErrRsp(c, -1, "invalid mode")
-		return
-	}
-
 	apKey := c.GetHeader("X-AP-Key")
 	if !verifyApPassword(apKey) {
 		time.Sleep(2 * time.Second)
 		rsp.ErrRsp(c, -4, "unauthorized")
+		return
+	}
+
+	if !isAPMode() {
+		time.Sleep(2 * time.Second)
+		rsp.ErrRsp(c, -1, "invalid mode")
 		return
 	}
 
@@ -126,7 +201,10 @@ func (s *Service) ConnectWifi(c *gin.Context) {
 		return
 	}
 
-	_ = exec.Command(WiFiScript, "connect_stop").Run()
+	if err := validateWifiCredentials(req.Ssid, req.Password); err != nil {
+		rsp.ErrRsp(c, -1, "invalid parameters: "+err.Error())
+		return
+	}
 
 	if err := connect(req.Ssid, req.Password); err != nil {
 		rsp.ErrRsp(c, -2, "set wifi failed")
@@ -154,20 +232,41 @@ func (s *Service) DisconnectWifi(c *gin.Context) {
 }
 
 func connect(ssid string, password string) error {
-	if ssid == "" || len(password) > 128 {
-		return errors.New("invalid ssid or password")
+	if err := validateWifiCredentials(ssid, password); err != nil {
+		return err
 	}
 
-	_ = exec.Command(WiFiScript, "ap_stop").Run()
-	_ = exec.Command(WiFiScript, "connect_stop").Run()
+	// connect_start itself stops the AP and disconnects the current network
+	// (recording it for rollback), so no separate connect_stop is needed.
+	_ = exec.Command(wifiScriptPath, "ap_stop").Run()
 
-	var cmd *exec.Cmd
+	args := []string{"connect_start", ssid}
 	if password != "" {
-		cmd = exec.Command(WiFiScript, "connect_start", ssid, password)
-	} else {
-		cmd = exec.Command(WiFiScript, "connect_start", ssid)
+		args = append(args, password)
 	}
 
+	if err := runConnectScript(args, connectTimeout, connectTermGrace); err != nil {
+		return err
+	}
+
+	for i := 0; i < connectPollRetries; i++ {
+		if wifiConnectedFn() {
+			return nil
+		}
+		time.Sleep(connectPollDelay)
+	}
+
+	return errConnectTimeout
+}
+
+// runConnectScript runs wifi.sh in its own process group. If it outlives
+// timeout, the group gets SIGTERM, which makes the script roll back to the
+// previous network before exiting, and SIGKILL only if it is still running
+// after grace. Nothing else is run after a timeout: in particular not
+// connect_stop, which would disable and save the network the rollback has
+// just re-selected.
+func runConnectScript(args []string, timeout, grace time.Duration) error {
+	cmd := exec.Command(wifiScriptPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -183,32 +282,40 @@ func connect(ssid string, password string) error {
 		done <- cmd.Wait()
 	}()
 
-	timer := time.NewTimer(30 * time.Second)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	select {
-	case <-timer.C:
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			log.Errorf("failed to kill process group: %v", err)
-		}
-		_ = exec.Command(WiFiScript, "connect_stop").Run()
-		return errors.New("connect wifi timeout")
 	case err := <-done:
-		timer.Stop()
 		if err != nil {
 			log.Errorf("connect wifi err: %v, out: %s", err, out.String())
 			return err
 		}
+		return nil
+	case <-timer.C:
 	}
 
-	for range 5 {
-		time.Sleep(2 * time.Second)
-		if isWifiConnected() {
-			return nil
+	pgid := cmd.Process.Pid
+	log.Errorf("wifi connect timed out after %s, sending SIGTERM", timeout)
+	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
+		log.Errorf("failed to SIGTERM process group: %v", err)
+	}
+
+	graceTimer := time.NewTimer(grace)
+	defer graceTimer.Stop()
+
+	select {
+	case <-done:
+		log.Errorf("wifi connect script exited after SIGTERM, out: %s", out.String())
+	case <-graceTimer.C:
+		log.Errorf("wifi connect script ignored SIGTERM for %s, sending SIGKILL", grace)
+		if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+			log.Errorf("failed to SIGKILL process group: %v", err)
 		}
+		<-done
 	}
 
-	return errors.New("connect wifi timeout")
+	return errConnectTimeout
 }
 
 func isWifiConnected() bool {
@@ -260,41 +367,35 @@ func isAPMode() bool {
 	return true
 }
 
-func getExpectedApPasswords() []string {
-	var passwords []string
+func isWifiConfigMode() bool {
+	if _, err := os.Stat(WiFiConfigFlag); err == nil {
+		return true
+	}
+	return isAPMode()
+}
 
-	// 1. Authoritative running hostapd configuration
+// getExpectedApPassword returns the one AP password that is accepted. The
+// running hostapd configuration is authoritative; /tmp/ap.pass (written
+// together with it by wifi.sh ap_start) is used only when hostapd.conf has no
+// passphrase, so a stale ap.pass can never act as a second valid password.
+func getExpectedApPassword() string {
 	if confByte, err := os.ReadFile(HostapdConfFile); err == nil {
 		for _, line := range strings.Split(string(confByte), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "wpa_passphrase=") {
-				pass := strings.TrimSpace(strings.TrimPrefix(line, "wpa_passphrase="))
-				if pass != "" {
-					passwords = append(passwords, pass)
+				if pass := strings.TrimSpace(strings.TrimPrefix(line, "wpa_passphrase=")); pass != "" {
+					return pass
 				}
 				break
 			}
 		}
 	}
 
-	// 2. Fallback to /tmp/ap.pass
 	if passByte, err := os.ReadFile(WiFiApPassFile); err == nil {
-		pass := strings.TrimSpace(string(passByte))
-		if pass != "" {
-			alreadyAdded := false
-			for _, p := range passwords {
-				if p == pass {
-					alreadyAdded = true
-					break
-				}
-			}
-			if !alreadyAdded {
-				passwords = append(passwords, pass)
-			}
-		}
+		return strings.TrimSpace(string(passByte))
 	}
 
-	return passwords
+	return ""
 }
 
 func verifyApPassword(inputPass string) bool {
@@ -303,25 +404,14 @@ func verifyApPassword(inputPass string) bool {
 		return false
 	}
 
-	expectedList := getExpectedApPasswords()
-	if len(expectedList) == 0 {
+	expected := getExpectedApPassword()
+	if expected == "" {
 		return false
 	}
 
-	for _, expected := range expectedList {
-		if subtle.ConstantTimeCompare([]byte(inputPass), []byte(expected)) == 1 {
-			return true
-		}
-	}
-
-	return false
+	return subtle.ConstantTimeCompare([]byte(inputPass), []byte(expected)) == 1
 }
 
 func getApPassword() string {
-	passwords := getExpectedApPasswords()
-	if len(passwords) > 0 {
-		return passwords[0]
-	}
-	return ""
+	return getExpectedApPassword()
 }
-

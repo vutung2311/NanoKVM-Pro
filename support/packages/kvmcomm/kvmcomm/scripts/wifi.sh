@@ -119,10 +119,27 @@ acquire_lock() {
 }
 
 release_lock() {
-    flock -u 200
+    flock -u 200 2>/dev/null || true
 }
 
-trap release_lock EXIT INT TERM
+# Set by connect_wifi while a new profile is being tried, so that a SIGTERM
+# from the caller (server timeout) can undo it before the script exits.
+CONNECT_ABORT_HANDLER=""
+
+on_signal() {
+    local code="$1"
+    trap - TERM INT
+    if [[ -n "$CONNECT_ABORT_HANDLER" ]]; then
+        "$CONNECT_ABORT_HANDLER"
+    fi
+    exit "$code"
+}
+
+# EXIT always releases the lock; TERM/INT must also terminate the script
+# (a bare release_lock handler would drop the lock and keep running).
+trap release_lock EXIT
+trap 'on_signal 143' TERM
+trap 'on_signal 130' INT
 
 acquire_lock
 
@@ -174,7 +191,7 @@ start_service() {
         pkill -9 -f "wpa_supplicant" 2>/dev/null || true
         debug_print "[wifi] starting wpa_supplicant..."
         mkdir -p /run/wpa_supplicant
-        wpa_supplicant -D "${DRIVER}" -i "$WIFI_IFACE" -c "$WPA_CONF_FILE" -B -P "$WPA_PID_FILE" >/dev/null 2>&1
+        wpa_supplicant -D "${DRIVER}" -i "$WIFI_IFACE" -c "$WPA_CONF_FILE" -B -P "$WPA_PID_FILE" >/dev/null 2>&1 200>&-
         local WPA_PID=$(cat "$WPA_PID_FILE")
         echo $WPA_PID > /sys/fs/cgroup/cgroup.procs 2>/dev/null || true
         sleep 1
@@ -268,7 +285,7 @@ ctrl_interface_group=0
 EOF
 
     debug_print "[wifi] starting hostapd service"
-    hostapd -B "$HOSTAPD_CONF" >/dev/null 2>&1
+    hostapd -B "$HOSTAPD_CONF" >/dev/null 2>&1 200>&-
 
     debug_print "[wifi] generating udhcpd configuration"
     cat >"$UDHCPD_CONF" <<EOF
@@ -283,7 +300,7 @@ option  lease   86400
 EOF
 
     debug_print "[wifi] starting udhcpd service"
-    udhcpd "$UDHCPD_CONF" >/dev/null 2>&1
+    udhcpd "$UDHCPD_CONF" >/dev/null 2>&1 200>&-
 
     debug_print "[wifi] configuring network routing"
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
@@ -517,6 +534,9 @@ escape_non_ascii() {
         if [ "$ord" -ge 32 ] && [ "$ord" -le 126 ]; then
             if [ "$c" = "\\" ]; then
                 escaped+="\\\\"
+            elif [ "$c" = '"' ]; then
+                # wpa_cli prints '"' in SSIDs as \" (printf_encode)
+                escaped+='\"'
             else
                 escaped+="$c"
             fi
@@ -544,6 +564,9 @@ unescape_non_ascii() {
             if [ "$next" = "\\" ]; then
                 result+="\\\\"
                 ((i+=2))
+            elif [ "$next" = '"' ]; then
+                result+='"'
+                ((i+=2))
             elif [ "$next" = "x" ]; then
                 local hex="${input:i+2:2}"
                 if [[ "$hex" =~ ^[0-9a-fA-F]{2}$ ]]; then
@@ -566,21 +589,131 @@ unescape_non_ascii() {
     printf '%b' "$result"
 }
 
+# ---------------------------------------------------------------------------
+# Station connect
+#
+# Time budget. A failed connect_start must finish well inside the server's
+# connect timeout (connectTimeout in server/service/network/wifi.go, 45 s),
+# otherwise the server SIGTERMs us mid-attempt:
+#   stop_wifi_ap + disconnect_wifi + start_service      ~3 s
+#   association wait (ASSOC_WAIT polls of ~1 s)         ~16 s
+#   DHCP probe: DISCOVER DHCP_TRIES x DHCP_TIMEOUT       6 s
+#               (+ REQUEST retries if offered, rare)    (+6 s)
+#   rollback (non-blocking: no association wait)        ~1 s
+#   worst case                                          ~26 s (32 s extreme)
+# ---------------------------------------------------------------------------
+readonly ASSOC_WAIT=15
+readonly ENT_ASSOC_WAIT=20   # EAP handshakes are slower; enterprise_connect has no server-side caller
+readonly DHCP_TRIES=3
+readonly DHCP_TIMEOUT=2
+readonly UDHCPC_SCRIPT="/kvmcomm/scripts/udhcpc.script"
+
+# SSID: 1-32 bytes, no control characters (they cannot round-trip through
+# wpa_cli / wpa_supplicant.conf).
+validate_ssid() {
+    local s="$1"
+    local LC_ALL=C
+    if [[ -z "$s" || ${#s} -gt 32 ]]; then
+        echo "[wifi] invalid SSID: must be 1-32 bytes" >&2
+        return 1
+    fi
+    if [[ "$s" == *[[:cntrl:]]* ]]; then
+        echo "[wifi] invalid SSID: contains control characters" >&2
+        return 1
+    fi
+    return 0
+}
+
+# WPA passphrase: 8-63 bytes without control characters, or a raw 64-hex PSK.
+validate_psk() {
+    local p="$1"
+    local LC_ALL=C
+    [[ ${#p} -eq 64 && "$p" =~ ^[0-9a-fA-F]{64}$ ]] && return 0
+    if [[ ${#p} -lt 8 || ${#p} -gt 63 ]]; then
+        echo "[wifi] invalid password: must be 8-63 characters or 64 hex digits" >&2
+        return 1
+    fi
+    if [[ "$p" == *[[:cntrl:]]* ]]; then
+        echo "[wifi] invalid password: contains control characters" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Print the id of the first saved network whose SSID matches. The SSID goes
+# through ENVIRON, not "awk -v", because -v would process the \xNN / \\ / \"
+# escapes that wpa_cli prints, so non-ASCII SSIDs would never match.
+find_network_id() {
+    local iface="$1" ssid_esc
+    ssid_esc=$(escape_non_ascii "$2")
+    wpa_cli -i "$iface" list_networks 2>/dev/null | WIFI_SSID_ESC="$ssid_esc" awk -F'\t' 'NR>1 && $2==ENVIRON["WIFI_SSID_ESC"] {print $1; exit}'
+}
+
+# Print the ids of all saved networks whose SSID matches.
+find_network_ids() {
+    local iface="$1" ssid_esc
+    ssid_esc=$(escape_non_ascii "$2")
+    wpa_cli -i "$iface" list_networks 2>/dev/null | WIFI_SSID_ESC="$ssid_esc" awk -F'\t' 'NR>1 && $2==ENVIRON["WIFI_SSID_ESC"] {print $1}'
+}
+
+wait_for_assoc() {
+    local iface="$1" secs="$2" i
+    for ((i = 0; i < secs; i++)); do
+        if wpa_cli -i "$iface" status 2>/dev/null | grep -qF "wpa_state=COMPLETED"; then
+            return 0
+        fi
+        sleep 1
+    done
+    wpa_cli -i "$iface" status 2>/dev/null | grep -qF "wpa_state=COMPLETED"
+}
+
+stop_dhcp_client() {
+    pkill -f "udhcpc.*-i $1" 2>/dev/null || true
+}
+
+# Bounded foreground DHCP attempt. Without -b/-f, busybox udhcpc stays in the
+# foreground until it has a lease and then forks itself into the background
+# to keep renewing it; with -n it instead exits 1 when no lease was obtained
+# after DHCP_TRIES x DHCP_TIMEOUT seconds. So the exit status is real (unlike
+# "udhcpc -b", which always exits 0) and a successful probe leaves the
+# renewing client running with no gap.
+dhcp_acquire() {
+    local iface="$1"
+    stop_dhcp_client "$iface"
+    udhcpc -i "$iface" -s "$UDHCPC_SCRIPT" -n -t "$DHCP_TRIES" -T "$DHCP_TIMEOUT" \
+        >/dev/null 2>&1 </dev/null 200>&-
+}
+
+# Start a DHCP client that keeps retrying in the background, without waiting.
+# Started in its own session so a process-group kill of this script cannot
+# take it down during its first (foreground) discovery round.
+start_dhcp_background() {
+    local iface="$1"
+    stop_dhcp_client "$iface"
+    if command -v setsid >/dev/null 2>&1; then
+        setsid udhcpc -i "$iface" -s "$UDHCPC_SCRIPT" -b >/dev/null 2>&1 </dev/null 200>&- &
+    else
+        udhcpc -i "$iface" -s "$UDHCPC_SCRIPT" -b >/dev/null 2>&1 </dev/null 200>&- &
+    fi
+}
+
+# Re-select the previous network. Does not wait for association:
+# wpa_supplicant associates on its own and the background DHCP client keeps
+# retrying until it gets a lease, so the device recovers even if the previous
+# AP is slow or temporarily away.
 rollback_wifi() {
     local prev_id="$1"
     local prev_ssid="$2"
     local WIFI_IFACE
-    WIFI_IFACE=$(get_wireless_interface)
+    WIFI_IFACE=$(get_wireless_interface) || return 1
 
     debug_print "[wifi] attempting rollback to previous network (id=$prev_id, ssid=$prev_ssid)..."
 
-    if [[ -z "$prev_id" && -n "$prev_ssid" && -n "$WIFI_IFACE" ]]; then
-        local prev_ssid_escaped
-        prev_ssid_escaped=$(escape_non_ascii "$prev_ssid")
-        prev_id=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' -v s="$prev_ssid_escaped" 'NR>1 && $2==s {print $1; exit}')
+    if [[ -z "$prev_id" && -n "$prev_ssid" ]]; then
+        prev_id=$(find_network_id "$WIFI_IFACE" "$prev_ssid")
     fi
 
-    if [[ -z "$prev_id" && -n "$WIFI_IFACE" ]]; then
+    if [[ -z "$prev_id" ]]; then
         local fallback_ssid=""
         if [[ -s "$PREVIOUS_WIFI_SAVE" ]]; then
             fallback_ssid=$(<"$PREVIOUS_WIFI_SAVE")
@@ -590,45 +723,125 @@ rollback_wifi() {
             fallback_ssid=$(grep -E '^WIFI_CFG_SSID=' "$WIFI_CFG_PATH" | cut -d= -f2-)
         fi
         if [[ -n "$fallback_ssid" ]]; then
-            local fb_escaped
-            fb_escaped=$(escape_non_ascii "$fallback_ssid")
-            prev_id=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' -v s="$fb_escaped" 'NR>1 && $2==s {print $1; exit}')
+            prev_id=$(find_network_id "$WIFI_IFACE" "$fallback_ssid")
             prev_ssid="$fallback_ssid"
         fi
     fi
 
-    if [[ -n "$prev_id" && -n "$WIFI_IFACE" ]]; then
-        debug_print "[wifi] rollback: re-enabling network id=$prev_id (ssid=$prev_ssid)"
-        wpa_cli -i "$WIFI_IFACE" enable_network "$prev_id" >/dev/null 2>&1
-        wpa_cli -i "$WIFI_IFACE" select_network "$prev_id" >/dev/null 2>&1
-        wpa_cli -i "$WIFI_IFACE" save_config >/dev/null 2>&1
-
-        local retry=0
-        while [ $retry -lt 15 ]; do
-            if wpa_cli -i "$WIFI_IFACE" status 2>/dev/null | grep -qF "wpa_state=COMPLETED"; then
-                debug_print "[wifi] rollback: connection re-established"
-                break
-            fi
-            sleep 1
-            ((retry++))
-        done
-
-        ip addr flush dev "$WIFI_IFACE" 2>/dev/null || true
-        pkill -f "udhcpc.*-i ${WIFI_IFACE}" 2>/dev/null || true
-        udhcpc -i "${WIFI_IFACE}" -s /kvmcomm/scripts/udhcpc.script -b >/dev/null 2>&1
-        debug_print "[wifi] rollback completed for $prev_ssid"
-        return 0
+    if [[ -z "$prev_id" ]]; then
+        debug_print "[wifi] rollback: no previous network available to restore"
+        return 1
     fi
 
-    debug_print "[wifi] rollback: no previous network available to restore"
-    return 1
+    debug_print "[wifi] rollback: re-enabling network id=$prev_id (ssid=$prev_ssid)"
+    wpa_cli -i "$WIFI_IFACE" enable_network "$prev_id" >/dev/null 2>&1
+    wpa_cli -i "$WIFI_IFACE" select_network "$prev_id" >/dev/null 2>&1
+    # The failed profile has already been removed, so this persists exactly the
+    # pre-attempt profile set, with the previous network enabled again (it was
+    # disabled and saved by disconnect_wifi).
+    wpa_cli -i "$WIFI_IFACE" save_config >/dev/null 2>&1
+    ip addr flush dev "$WIFI_IFACE" 2>/dev/null || true
+    start_dhcp_background "$WIFI_IFACE"
+    debug_print "[wifi] rollback started for $prev_ssid"
+    return 0
+}
+
+# Undo after a failed attempt (the failed new profile is already removed):
+# go back to the previous network; if there is none but an already-saved
+# profile was being reused, keep that one enabled and keep retrying DHCP so
+# the device recovers when its AP comes back.
+restore_after_failure() {
+    local iface="$1" prev_id="$2" prev_ssid="$3" reused_id="$4"
+    rollback_wifi "$prev_id" "$prev_ssid" && return 0
+    if [[ -n "$reused_id" ]]; then
+        wpa_cli -i "$iface" enable_network "$reused_id" >/dev/null 2>&1 || true
+        wpa_cli -i "$iface" select_network "$reused_id" >/dev/null 2>&1 || true
+        wpa_cli -i "$iface" save_config >/dev/null 2>&1 || true
+        start_dhcp_background "$iface"
+    fi
+    return 0
+}
+
+# State for connect_abort (SIGTERM/SIGINT while connect_start is running).
+CA_IFACE=""
+CA_NEW_ID=""
+CA_PREV_ID=""
+CA_PREV_SSID=""
+CA_REUSED_ID=""
+
+# Fast, non-blocking undo of an in-flight connect attempt; runs from the
+# signal trap, so it must finish within the caller's SIGTERM grace period
+# (a few wpa_cli calls, no waits).
+connect_abort() {
+    CONNECT_ABORT_HANDLER=""
+    [[ -n "$CA_IFACE" ]] || return 0
+    echo "[wifi] connect aborted by signal, rolling back" >&2
+    stop_dhcp_client "$CA_IFACE"
+    if [[ -n "$CA_NEW_ID" ]]; then
+        wpa_cli -i "$CA_IFACE" remove_network "$CA_NEW_ID" >/dev/null 2>&1 || true
+    fi
+    restore_after_failure "$CA_IFACE" "$CA_PREV_ID" "$CA_PREV_SSID" "$CA_REUSED_ID"
+}
+
+# SSID of the network to fall back to if an attempt fails.
+previous_ssid() {
+    if [[ -s "$PREVIOUS_WIFI_SAVE" ]]; then
+        cat "$PREVIOUS_WIFI_SAVE"
+    elif [[ -s "$PREVIOUS_WIFI" ]]; then
+        cat "$PREVIOUS_WIFI"
+    elif [[ -s "$WIFI_CFG_PATH" ]]; then
+        grep -E '^WIFI_CFG_SSID=' "$WIFI_CFG_PATH" | cut -d= -f2-
+    fi
+}
+
+# After a proven connection (associated + DHCP lease): drop the profiles the
+# new one supersedes, persist wpa_supplicant.conf and record the SSID.
+commit_profile() {
+    local iface="$1" ssid="$2" new_id="$3" old_id
+    CONNECT_ABORT_HANDLER=""
+    if [[ -n "$new_id" ]]; then
+        for old_id in $(find_network_ids "$iface" "$ssid"); do
+            [[ "$old_id" == "$new_id" ]] && continue
+            debug_print "[wifi] removing superseded network id=$old_id"
+            wpa_cli -i "$iface" remove_network "$old_id" >/dev/null 2>&1 || true
+        done
+    fi
+    wpa_cli -i "$iface" save_config >/dev/null
+
+    cat <<EOF >"$WIFI_CFG_PATH"
+WIFI_CFG_SSID=${ssid}
+EOF
+    echo "$ssid" > "$PREVIOUS_WIFI_SAVE" 2>/dev/null || true
+    echo "$ssid" > "$PREVIOUS_WIFI" 2>/dev/null || true
+    sync 2>/dev/null || true
+}
+
+# Undo a failed attempt that has not been committed: stop its DHCP client,
+# remove the new profile (never saved) and restore the previous network.
+fail_attempt() {
+    local iface="$1" new_id="$2" prev_id="$3" prev_ssid="$4" reused_id="$5"
+    CONNECT_ABORT_HANDLER=""
+    stop_dhcp_client "$iface"
+    ip addr flush dev "$iface" 2>/dev/null || true
+    if [[ -n "$new_id" ]]; then
+        wpa_cli -i "$iface" remove_network "$new_id" >/dev/null 2>&1 || true
+    fi
+    restore_after_failure "$iface" "$prev_id" "$prev_ssid" "$reused_id"
 }
 
 connect_wifi() {
     local ssid="$1"
     local password="$2"
     local WIFI_IFACE
-    WIFI_IFACE=$(get_wireless_interface)
+    WIFI_IFACE=$(get_wireless_interface) || {
+        echo "[wifi] no wireless interface found" >&2
+        return 1
+    }
+
+    validate_ssid "$ssid" || return 2
+    if [[ -n "$password" ]]; then
+        validate_psk "$password" || return 2
+    fi
 
     start_service
 
@@ -641,114 +854,97 @@ connect_wifi() {
     wpa_cli -i "$WIFI_IFACE" set sae_pwe 2 >/dev/null 2>&1 || true
 
     # Record previous network for rollback in case connection fails
-    local prev_ssid=""
-    if [[ -s "$PREVIOUS_WIFI_SAVE" ]]; then
-        prev_ssid=$(<"$PREVIOUS_WIFI_SAVE")
-    elif [[ -s "$PREVIOUS_WIFI" ]]; then
-        prev_ssid=$(<"$PREVIOUS_WIFI")
-    elif [[ -s "$WIFI_CFG_PATH" ]]; then
-        prev_ssid=$(grep -E '^WIFI_CFG_SSID=' "$WIFI_CFG_PATH" | cut -d= -f2-)
-    fi
-    local prev_id=""
+    local prev_ssid prev_id=""
+    prev_ssid=$(previous_ssid)
     if [[ -n "$prev_ssid" ]]; then
-        local prev_ssid_escaped
-        prev_ssid_escaped=$(escape_non_ascii "$prev_ssid")
-        prev_id=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' -v s="$prev_ssid_escaped" 'NR>1 && $2==s {print $1; exit}')
+        prev_id=$(find_network_id "$WIFI_IFACE" "$prev_ssid")
     fi
-
-    local ssid_escaped
-    ssid_escaped=$(escape_non_ascii "$ssid")
-    debug_print "[wifi] ssid_escaped: $ssid_escaped"
 
     local existing
-    existing=$(wpa_cli -i "$WIFI_IFACE" list_networks | awk -F'\t' -v s="$ssid_escaped" 'NR>1 && $2==s {print $1; exit}')
-    debug_print "[wifi] existing network id: $existing"
+    existing=$(find_network_id "$WIFI_IFACE" "$ssid")
+    debug_print "[wifi] existing network id: $existing, previous network id: $prev_id"
 
-    if [[ -n "$password" && -n "$existing" ]]; then
-        debug_print "[wifi] password provided, deleting existing network id=$existing"
-        wpa_cli -i "$WIFI_IFACE" remove_network "$existing" >/dev/null
-        existing=""
-    fi
+    # From here on a signal must restore the previous network.
+    CA_IFACE="$WIFI_IFACE"
+    CA_PREV_ID="$prev_id"
+    CA_PREV_SSID="$prev_ssid"
+    CONNECT_ABORT_HANDLER=connect_abort
 
-    local id=""
-    local is_new_network=false
-    if [[ -n "$existing" ]]; then
-        id="$existing"
-        debug_print "[wifi] found existing network id=$existing, reusing."
-        wpa_cli -i "$WIFI_IFACE" set_network "$existing" mesh_fwding 0 >/dev/null
-        wpa_cli -i "$WIFI_IFACE" enable_network "$existing" >/dev/null
-        wpa_cli -i "$WIFI_IFACE" select_network "$existing" >/dev/null
-        wpa_cli -i "$WIFI_IFACE" save_config >/dev/null
-    else
-        is_new_network=true
+    local id="" new_id=""
+    if [[ -n "$password" || -z "$existing" ]]; then
+        # Add the new profile *alongside* any existing profile for this SSID.
+        # The old one is removed only after the new one has associated and got
+        # a DHCP lease, so a mistyped password never destroys a working profile.
         debug_print "[wifi] adding new network: $ssid"
-        id=$(wpa_cli -i "$WIFI_IFACE" add_network | tail -n1)
-        wpa_cli -i "$WIFI_IFACE" set_network "$id" ssid "\"$ssid\"" >/dev/null
+        new_id=$(wpa_cli -i "$WIFI_IFACE" add_network 2>/dev/null | tail -n1)
+        if [[ ! "$new_id" =~ ^[0-9]+$ ]]; then
+            echo "[wifi] add_network failed" >&2
+            CONNECT_ABORT_HANDLER=""
+            restore_after_failure "$WIFI_IFACE" "$prev_id" "$prev_ssid" ""
+            return 1
+        fi
+        id="$new_id"
+        CA_NEW_ID="$new_id"
 
+        local ok=true
+        # wpa_supplicant takes everything between the first and the last '"'
+        # verbatim (no unescaping), so SSID and passphrase are passed raw.
+        [[ "$(wpa_cli -i "$WIFI_IFACE" set_network "$id" ssid "\"$ssid\"" 2>/dev/null)" == "OK" ]] || ok=false
         if [[ -z "$password" ]]; then
             wpa_cli -i "$WIFI_IFACE" set_network "$id" key_mgmt NONE >/dev/null
         else
             # Support both WPA2-PSK and WPA3-Personal (SAE)
             wpa_cli -i "$WIFI_IFACE" set_network "$id" key_mgmt "WPA-PSK SAE" >/dev/null
             wpa_cli -i "$WIFI_IFACE" set_network "$id" ieee80211w 1 >/dev/null
+            local psk_arg
             if [[ ${#password} -eq 64 && "$password" =~ ^[0-9a-fA-F]{64}$ ]]; then
-                wpa_cli -i "$WIFI_IFACE" set_network "$id" psk "$password" >/dev/null
+                psk_arg="$password"
             else
-                local escaped_pw="${password//\\/\\\\}"
-                escaped_pw="${escaped_pw//\"/\\\"}"
-                wpa_cli -i "$WIFI_IFACE" set_network "$id" psk "\"$escaped_pw\"" >/dev/null
+                psk_arg="\"$password\""
             fi
+            [[ "$(wpa_cli -i "$WIFI_IFACE" set_network "$id" psk "$psk_arg" 2>/dev/null)" == "OK" ]] || ok=false
         fi
 
-        wpa_cli -i "$WIFI_IFACE" set_network "$id" mesh_fwding 0 >/dev/null
-        wpa_cli -i "$WIFI_IFACE" enable_network "$id" >/dev/null
-        wpa_cli -i "$WIFI_IFACE" select_network "$id" >/dev/null
-        wpa_cli -i "$WIFI_IFACE" save_config >/dev/null
-        debug_print "[wifi] saved new WiFi to config"
-    fi
-
-    debug_print "[wifi] waiting for connection..."
-    local retry=0
-    while [ $retry -lt 20 ]; do
-        if wpa_cli -i "$WIFI_IFACE" status | grep -qF "wpa_state=COMPLETED"; then
-            debug_print "[wifi] connection established"
-            break
-        fi
-        sleep 1
-        ((retry++))
-    done
-
-    if [ $retry -ge 20 ]; then
-        debug_print "[wifi] connection timeout" >&2
-        if [[ "$is_new_network" == "true" && -n "$id" ]]; then
+        if [[ "$ok" != "true" ]]; then
+            echo "[wifi] wpa_supplicant rejected the network parameters" >&2
+            CONNECT_ABORT_HANDLER=""
             wpa_cli -i "$WIFI_IFACE" remove_network "$id" >/dev/null 2>&1 || true
-            wpa_cli -i "$WIFI_IFACE" save_config >/dev/null 2>&1 || true
+            restore_after_failure "$WIFI_IFACE" "$prev_id" "$prev_ssid" ""
+            return 2
         fi
-        rollback_wifi "$prev_id" "$prev_ssid"
-        return 1
+    else
+        id="$existing"
+        CA_REUSED_ID="$existing"
+        debug_print "[wifi] found existing network id=$existing, reusing."
     fi
 
+    # No save_config until the new profile is proven to work.
+    wpa_cli -i "$WIFI_IFACE" set_network "$id" mesh_fwding 0 >/dev/null
+    wpa_cli -i "$WIFI_IFACE" enable_network "$id" >/dev/null
+    wpa_cli -i "$WIFI_IFACE" select_network "$id" >/dev/null
+
+    stop_dhcp_client "$WIFI_IFACE"
     ip addr flush dev "$WIFI_IFACE"
 
-    debug_print "[wifi] requesting IP address via DHCP..."
-    pkill -f "udhcpc.*-i ${WIFI_IFACE}" 2>/dev/null || true
-    if ! udhcpc -i "${WIFI_IFACE}" -s /kvmcomm/scripts/udhcpc.script -b >/dev/null 2>&1; then
-        echo "[wifi] DHCP failed on $WIFI_IFACE" >&2
-        if [[ "$is_new_network" == "true" && -n "$id" ]]; then
-            wpa_cli -i "$WIFI_IFACE" remove_network "$id" >/dev/null 2>&1 || true
-            wpa_cli -i "$WIFI_IFACE" save_config >/dev/null 2>&1 || true
+    local result="ok"
+    debug_print "[wifi] waiting for connection..."
+    if ! wait_for_assoc "$WIFI_IFACE" "$ASSOC_WAIT"; then
+        echo "[wifi] association timeout after ${ASSOC_WAIT}s" >&2
+        result="assoc"
+    else
+        debug_print "[wifi] connection established, requesting IP address via DHCP..."
+        if ! dhcp_acquire "$WIFI_IFACE"; then
+            echo "[wifi] DHCP failed on $WIFI_IFACE" >&2
+            result="dhcp"
         fi
-        rollback_wifi "$prev_id" "$prev_ssid"
+    fi
+
+    if [[ "$result" != "ok" ]]; then
+        fail_attempt "$WIFI_IFACE" "$new_id" "$prev_id" "$prev_ssid" "$CA_REUSED_ID"
         return 1
     fi
 
-    cat <<EOF >"$WIFI_CFG_PATH"
-WIFI_CFG_SSID=${ssid}
-EOF
-    echo "$ssid" > "$PREVIOUS_WIFI_SAVE" 2>/dev/null || true
-    echo "$ssid" > "$PREVIOUS_WIFI" 2>/dev/null || true
-    sync 2>/dev/null || true
-
+    commit_profile "$WIFI_IFACE" "$ssid" "$new_id"
     debug_print "[wifi] connected to $ssid"
     return 0
 }
@@ -825,8 +1021,23 @@ connect_enterprise_wifi() {
         return 1
     fi
 
+    validate_ssid "$ssid" || return 2
+    # A newline or other control character would end the quoted value early
+    # in wpa_cli / wpa_supplicant.conf (and could inject config lines).
+    local field
+    for field in "$identity" "$password" "$phase2" "$ca_cert" "$client_cert" \
+        "$private_key" "$private_key_passwd" "$anonymous_identity" "$domain"; do
+        if [[ "$field" == *[[:cntrl:]]* ]]; then
+            echo "[wifi] enterprise parameters must not contain control characters" >&2
+            return 2
+        fi
+    done
+
     local WIFI_IFACE
-    WIFI_IFACE=$(get_wireless_interface)
+    WIFI_IFACE=$(get_wireless_interface) || {
+        echo "[wifi] no wireless interface found" >&2
+        return 1
+    }
 
     start_service
 
@@ -835,105 +1046,97 @@ connect_enterprise_wifi() {
         return 1
     fi
 
-    local ssid_escaped
-    ssid_escaped=$(escape_non_ascii "$ssid")
     debug_print "[wifi] enterprise connect: ssid=$ssid eap=$eap_method identity=$identity"
 
-    local existing
-    existing=$(wpa_cli -i "$WIFI_IFACE" list_networks | awk -F'\t' -v s="$ssid_escaped" 'NR>1 && $2==s {print $1; exit}')
-    if [[ -n "$existing" ]]; then
-        debug_print "[wifi] removing existing network id=$existing for reconfiguration"
-        wpa_cli -i "$WIFI_IFACE" remove_network "$existing" >/dev/null
+    local prev_ssid prev_id=""
+    prev_ssid=$(previous_ssid)
+    if [[ -n "$prev_ssid" ]]; then
+        prev_id=$(find_network_id "$WIFI_IFACE" "$prev_ssid")
     fi
 
+    # From here on a signal must restore the previous network.
+    CA_IFACE="$WIFI_IFACE"
+    CA_PREV_ID="$prev_id"
+    CA_PREV_SSID="$prev_ssid"
+    CA_REUSED_ID=""
+    CONNECT_ABORT_HANDLER=connect_abort
+
+    # Add the new profile alongside any existing one for this SSID; the old
+    # one is removed only once the new one has associated and got a lease.
     local id
-    id=$(wpa_cli -i "$WIFI_IFACE" add_network | tail -n1)
+    id=$(wpa_cli -i "$WIFI_IFACE" add_network 2>/dev/null | tail -n1)
+    if [[ ! "$id" =~ ^[0-9]+$ ]]; then
+        echo "[wifi] add_network failed" >&2
+        fail_attempt "$WIFI_IFACE" "" "$prev_id" "$prev_ssid" ""
+        return 1
+    fi
+    CA_NEW_ID="$id"
     debug_print "[wifi] added enterprise network id=$id"
 
-    wpa_cli -i "$WIFI_IFACE" set_network "$id" ssid "\"$ssid\"" >/dev/null
-    wpa_cli -i "$WIFI_IFACE" set_network "$id" key_mgmt "WPA-EAP" >/dev/null
-    wpa_cli -i "$WIFI_IFACE" set_network "$id" eap "$eap_method" >/dev/null
-    wpa_cli -i "$WIFI_IFACE" set_network "$id" identity "\"$identity\"" >/dev/null
+    # Values are passed raw inside quotes: wpa_supplicant keeps everything
+    # between the first and the last '"' verbatim.
+    local ok=true
+    ent_set() {
+        if [[ "$(wpa_cli -i "$WIFI_IFACE" set_network "$id" "$1" "$2" 2>/dev/null)" != "OK" ]]; then
+            echo "[wifi] wpa_supplicant rejected $1" >&2
+            ok=false
+        fi
+    }
 
-    if [[ -n "$anonymous_identity" ]]; then
-        wpa_cli -i "$WIFI_IFACE" set_network "$id" anonymous_identity "\"$anonymous_identity\"" >/dev/null
-    fi
-
-    if [[ -n "$ca_cert" ]]; then
-        wpa_cli -i "$WIFI_IFACE" set_network "$id" ca_cert "\"$ca_cert\"" >/dev/null
-    fi
-
-    if [[ -n "$domain" ]]; then
-        wpa_cli -i "$WIFI_IFACE" set_network "$id" domain_suffix_match "\"$domain\"" >/dev/null
-    fi
+    ent_set ssid "\"$ssid\""
+    ent_set key_mgmt "WPA-EAP"
+    ent_set eap "$eap_method"
+    ent_set identity "\"$identity\""
+    [[ -n "$anonymous_identity" ]] && ent_set anonymous_identity "\"$anonymous_identity\""
+    [[ -n "$ca_cert" ]] && ent_set ca_cert "\"$ca_cert\""
+    [[ -n "$domain" ]] && ent_set domain_suffix_match "\"$domain\""
 
     case "$eap_method" in
-        PEAP)
-            wpa_cli -i "$WIFI_IFACE" set_network "$id" password "\"$password\"" >/dev/null
-            wpa_cli -i "$WIFI_IFACE" set_network "$id" phase2 "\"$phase2\"" >/dev/null
-            debug_print "[wifi] PEAP configured with phase2=$phase2"
+        PEAP|TTLS)
+            ent_set password "\"$password\""
+            ent_set phase2 "\"$phase2\""
+            debug_print "[wifi] $eap_method configured with phase2=$phase2"
             ;;
         TLS)
-            wpa_cli -i "$WIFI_IFACE" set_network "$id" client_cert "\"$client_cert\"" >/dev/null
-            wpa_cli -i "$WIFI_IFACE" set_network "$id" private_key "\"$private_key\"" >/dev/null
-            if [[ -n "$private_key_passwd" ]]; then
-                wpa_cli -i "$WIFI_IFACE" set_network "$id" private_key_passwd "\"$private_key_passwd\"" >/dev/null
-            fi
+            ent_set client_cert "\"$client_cert\""
+            ent_set private_key "\"$private_key\""
+            [[ -n "$private_key_passwd" ]] && ent_set private_key_passwd "\"$private_key_passwd\""
             debug_print "[wifi] EAP-TLS configured with cert=$client_cert key=$private_key"
             ;;
-        TTLS)
-            wpa_cli -i "$WIFI_IFACE" set_network "$id" password "\"$password\"" >/dev/null
-            wpa_cli -i "$WIFI_IFACE" set_network "$id" phase2 "\"$phase2\"" >/dev/null
-            debug_print "[wifi] EAP-TTLS configured with phase2=$phase2"
-            ;;
     esac
+    ent_set mesh_fwding 0
+    unset -f ent_set
 
-    wpa_cli -i "$WIFI_IFACE" set_network "$id" mesh_fwding 0 >/dev/null
+    if [[ "$ok" != "true" ]]; then
+        fail_attempt "$WIFI_IFACE" "$id" "$prev_id" "$prev_ssid" ""
+        return 2
+    fi
+
+    # No save_config until the new profile is proven to work.
     wpa_cli -i "$WIFI_IFACE" enable_network "$id" >/dev/null
     wpa_cli -i "$WIFI_IFACE" select_network "$id" >/dev/null
-    wpa_cli -i "$WIFI_IFACE" save_config >/dev/null
 
-    debug_print "[wifi] waiting for enterprise connection..."
-    local retry=0
-    while [ $retry -lt 20 ]; do
-        local state
-        state=$(wpa_cli -i "$WIFI_IFACE" status 2>/dev/null | grep "wpa_state=" | cut -d= -f2)
-        if [[ "$state" == "COMPLETED" ]]; then
-            debug_print "[wifi] enterprise connection established"
-            break
-        fi
-        sleep 1
-        ((retry++))
-    done
-
-    if [ $retry -eq 20 ]; then
-        echo "[wifi] enterprise connection timeout after 20 seconds" >&2
-        local status_output
-        status_output=$(wpa_cli -i "$WIFI_IFACE" status 2>/dev/null)
-        local eap_status
-        eap_status=$(echo "$status_output" | grep "EAP state=" | cut -d= -f2)
-        if [[ -n "$eap_status" ]]; then
-            debug_print "[wifi] EAP state at timeout: $eap_status"
-        fi
-        return 1
-    fi
-
+    stop_dhcp_client "$WIFI_IFACE"
     ip addr flush dev "$WIFI_IFACE"
 
-    debug_print "[wifi] requesting IP address via DHCP..."
-    pkill -f "udhcpc.*-i ${WIFI_IFACE}" 2>/dev/null || true
-    if ! udhcpc -i "${WIFI_IFACE}" -s /kvmcomm/scripts/udhcpc.script -b >/dev/null 2>&1; then
-        echo "[wifi] DHCP failed on $WIFI_IFACE" >&2
+    debug_print "[wifi] waiting for enterprise connection..."
+    if ! wait_for_assoc "$WIFI_IFACE" "$ENT_ASSOC_WAIT"; then
+        echo "[wifi] enterprise connection timeout after ${ENT_ASSOC_WAIT}s" >&2
+        local eap_status
+        eap_status=$(wpa_cli -i "$WIFI_IFACE" status 2>/dev/null | grep "EAP state=" | cut -d= -f2)
+        [[ -n "$eap_status" ]] && echo "[wifi] EAP state at timeout: $eap_status" >&2
+        fail_attempt "$WIFI_IFACE" "$id" "$prev_id" "$prev_ssid" ""
         return 1
     fi
 
-    cat <<EOF >"$WIFI_CFG_PATH"
-WIFI_CFG_SSID=${ssid}
-EOF
-    echo "$ssid" > "$PREVIOUS_WIFI_SAVE" 2>/dev/null || true
-    echo "$ssid" > "$PREVIOUS_WIFI" 2>/dev/null || true
-    sync 2>/dev/null || true
+    debug_print "[wifi] requesting IP address via DHCP..."
+    if ! dhcp_acquire "$WIFI_IFACE"; then
+        echo "[wifi] DHCP failed on $WIFI_IFACE" >&2
+        fail_attempt "$WIFI_IFACE" "$id" "$prev_id" "$prev_ssid" ""
+        return 1
+    fi
 
+    commit_profile "$WIFI_IFACE" "$ssid" "$id"
     debug_print "[wifi] connected to enterprise network: $ssid (EAP: $eap_method)"
     return 0
 }
@@ -1000,20 +1203,22 @@ remove_wifi() {
         return 1
     fi
 
-    local ssid_escaped
-    ssid_escaped=$(escape_non_ascii "$ssid")
-    debug_print "[wifi] removing network: $ssid (escaped: $ssid_escaped)"
+    debug_print "[wifi] removing network: $ssid"
 
-    local network_id
-    network_id=$(wpa_cli -i "$WIFI_IFACE" list_networks | awk -F'\t' -v s="$ssid_escaped" 'NR>1 && $2==s {print $1; exit}')
+    # All saved profiles for this SSID (there can be more than one), looked up
+    # via find_network_ids so non-ASCII / '\' / '"' SSIDs match.
+    local network_ids
+    network_ids=$(find_network_ids "$WIFI_IFACE" "$ssid")
 
-    if [[ -z "$network_id" ]]; then
+    if [[ -z "$network_ids" ]]; then
         debug_print "[wifi] network not found: $ssid" >&2
         return 1
     fi
 
-    local is_current
-    is_current=$(wpa_cli -i "$WIFI_IFACE" list_networks | awk -F'\t' -v s="$ssid_escaped" 'NR>1 && $2==s && $4~/\[CURRENT\]/ {print "true"; exit}')
+    local ssid_escaped is_current
+    ssid_escaped=$(escape_non_ascii "$ssid")
+    is_current=$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | WIFI_SSID_ESC="$ssid_escaped" \
+        awk -F'\t' 'NR>1 && $2==ENVIRON["WIFI_SSID_ESC"] && $4~/\[CURRENT\]/ {print "true"; exit}')
     [[ "$is_current" != "true" ]] && is_current="false"
 
     if [[ "$is_current" == "true" ]]; then
@@ -1022,9 +1227,13 @@ remove_wifi() {
         sleep 1
     fi
 
-    debug_print "[wifi] found network id=$network_id, removing..."
+    local network_id failed=false
+    for network_id in $network_ids; do
+        debug_print "[wifi] found network id=$network_id, removing..."
+        wpa_cli -i "$WIFI_IFACE" remove_network "$network_id" >/dev/null || failed=true
+    done
 
-    if wpa_cli -i "$WIFI_IFACE" remove_network "$network_id" >/dev/null; then
+    if [[ "$failed" != "true" ]]; then
         wpa_cli -i "$WIFI_IFACE" save_config >/dev/null
         debug_print "[wifi] network removed and config saved: $ssid"
 
@@ -1309,6 +1518,15 @@ case "$1" in
         echo "Error: SSID cannot be empty" >&2
         exit 1
     fi
+    # Reject bad input before tearing down the current connection.
+    validate_ssid "$2" || exit 2
+    if [[ -n "${3:-}" ]]; then
+        validate_psk "$3" || exit 2
+    fi
+    # A signal from here on restores the previous network (found via
+    # PREVIOUS_WIFI_SAVE, which disconnect_wifi records).
+    CA_IFACE=$(get_wireless_interface)
+    CONNECT_ABORT_HANDLER=connect_abort
     stop_wifi_ap
     disconnect_wifi
     connect_wifi "$2" "${3:-}"
@@ -1338,6 +1556,17 @@ case "$1" in
         echo "Error: Identity cannot be empty" >&2
         exit 1
     fi
+    validate_ssid "$2" || exit 2
+    # Reject bad input before tearing down the current connection.
+    for ent_arg in "${@:3}"; do
+        if [[ "$ent_arg" == *[[:cntrl:]]* ]]; then
+            echo "[wifi] enterprise parameters must not contain control characters" >&2
+            exit 2
+        fi
+    done
+    # A signal from here on restores the previous network.
+    CA_IFACE=$(get_wireless_interface)
+    CONNECT_ABORT_HANDLER=connect_abort
     stop_wifi_ap
     disconnect_wifi
     connect_enterprise_wifi "$2" "$3" "$4" "${@:5}"
