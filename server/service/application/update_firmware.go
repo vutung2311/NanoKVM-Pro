@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
-	"time"
+	"syscall"
 )
 
 var firmwareRebootScheduler = scheduleFirmwareReboot
@@ -38,40 +37,25 @@ func installFirmwarePackage(packagePath string) error {
 	return nil
 }
 
-func scheduleFirmwareReboot(string) error {
-	armHardwareBootSlot()
-
-	go func() {
-		// Provide a brief grace period so in-flight HTTP status polling
-		// receives the reboot_scheduled state before services terminate.
-		time.Sleep(1500 * time.Millisecond)
-		_ = exec.Command("sync").Run()
-		if err := exec.Command("systemctl", "reboot").Run(); err != nil {
-			_ = exec.Command("reboot", "-f").Run()
-		}
-	}()
-	return nil
+// firmwareRebootCommand is the detached helper that performs the reboot. The
+// short delay lets in-flight HTTP status polling observe reboot_scheduled
+// before services stop; `reboot -f` is the fallback if systemd refuses.
+//
+// Boot-slot selection is owned by firmware_update.sh (and kvmcomm.sh on every
+// boot); this service must not touch the slot registers or U-Boot env.
+var firmwareRebootCommand = []string{
+	"/bin/sh", "-c", "sleep 1.5; sync; systemctl reboot || reboot -f",
 }
 
-func armHardwareBootSlot() {
-	bootsystem := "A"
-	if out, err := exec.Command("fw_printenv", "bootsystem").Output(); err == nil {
-		parts := strings.Split(strings.TrimSpace(string(out)), "=")
-		if len(parts) == 2 && strings.TrimSpace(parts[1]) == "B" {
-			bootsystem = "B"
-		}
+func scheduleFirmwareReboot(string) error {
+	cmd := exec.Command(firmwareRebootCommand[0], firmwareRebootCommand[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("automatic reboot failed: %w", err)
 	}
-
-	_ = exec.Command("devmem", "0x239002C", "32", "0x80").Run()
-	if bootsystem == "B" {
-		_ = exec.Command("devmem", "0x239002C", "32", "0x14").Run()
-		_ = exec.Command("devmem", "0x2390028", "32", "0x28").Run()
-		_ = exec.Command("fw_setenv", "bootsystem", "B").Run()
-	} else {
-		_ = exec.Command("devmem", "0x239002C", "32", "0x28").Run()
-		_ = exec.Command("devmem", "0x2390028", "32", "0x14").Run()
-		_ = exec.Command("fw_setenv", "bootsystem", "A").Run()
-	}
+	// Reap the helper; its exit status is irrelevant once the reboot begins.
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // limitedCommandOutput bounds logs returned to the API while still consuming

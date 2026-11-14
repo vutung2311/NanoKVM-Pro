@@ -160,7 +160,7 @@ with zipfile.ZipFile('${BASE_AXP}') as z:
     echo -e "${CYAN}[+] Generating BLAKE2b (b2sum) integrity manifest...${RESET}"
     (
         cd "${stage_dir}"
-        find firmware overlay -type f 2>/dev/null | sort | xargs b2sum > b2sum.txt
+        find firmware overlay -type f -print0 2>/dev/null | sort -z | xargs -0 -r b2sum > b2sum.txt
     )
     if [[ ! -s "${stage_dir}/b2sum.txt" ]]; then
         echo -e "${RED}[✗] Failed to generate valid b2sum integrity manifest.${RESET}" >&2
