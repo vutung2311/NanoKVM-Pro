@@ -46,6 +46,8 @@ case "$ACTION" in
 		grep -vE "# $interface\$" $RESOLV_CONF > $TMPFILE
 		cat $TMPFILE > $RESOLV_CONF
 		rm -f $TMPFILE
+		# Forget the DNS servers and domains the last lease set.
+		resolvectl revert $interface 2>/dev/null || true
 
 		if [ -x /usr/sbin/avahi-autoipd ]; then
 			/usr/sbin/avahi-autoipd -c $interface && /usr/sbin/avahi-autoipd -k $interface
@@ -114,10 +116,16 @@ case "$ACTION" in
 		fi
 
 		if [ -n "$dns" ]; then
-			for ns in $dns; do
-				echo "adding dns $ns"
-				resolvectl dns $interface $ns
-			done
+			echo "setting dns $dns"
+			# One call with every server: each `resolvectl dns` replaces the
+			# interface's list, so a per-server loop kept only the last one.
+			# shellcheck disable=SC2086
+			if ! resolvectl dns $interface $dns 2>/dev/null; then
+				# No systemd-resolved: tag the lines so deconfig/renew drop them.
+				for ns in $dns; do
+					echo "nameserver $ns # $interface" >> $RESOLV_CONF
+				done
+			fi
 		fi
 		;;
 esac
