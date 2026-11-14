@@ -121,8 +121,7 @@ async def wait_for_driver_ready(timeout_sec: float = 30.0) -> bool:
     return False
 
 
-async def get_lt6911_power() -> bool:
-    path = "/proc/lt6911_info/power"
+async def _read_on(path: str) -> bool:
     try:
         async with aiofiles.open(path, "r") as f:
             content = await f.read()
@@ -130,6 +129,38 @@ async def get_lt6911_power() -> bool:
     except Exception as e:
         logger.error(f"Failed to read {path}: {e}")
         return False
+
+
+async def get_lt6911_power() -> bool:
+    return await _read_on("/proc/lt6911_info/power")
+
+
+async def get_lt86102_power() -> bool:
+    return await _read_on("/proc/lt6911_info/hdmi_power")
+
+
+async def is_passthrough_on() -> bool:
+    """HDMI loop-out enabled: a monitor may be fed through the LT86102 splitter."""
+    return await _read_on("/proc/lt6911_info/loopout_power")
+
+
+async def wait_for_capture_signal(timeout_sec: float) -> bool:
+    """Wait until the capture chip reports a locked input (non-zero width)."""
+    start = time.time()
+    while time.time() - start < timeout_sec:
+        try:
+            async with aiofiles.open("/proc/lt6911_info/width", "r") as f:
+                if int((await f.read()).strip() or "0") > 0:
+                    return True
+        except (OSError, ValueError):
+            pass
+        await asyncio.sleep(0.1)
+    return False
+
+
+# How long a wake that keeps the splitter powered waits for the capture chip to
+# lock before falling back to an HPD cycle (which makes the source re-train).
+SOFT_WAKE_LOCK_TIMEOUT = 3.0
 
 class PowerController:
     """
@@ -243,13 +274,28 @@ class PowerController:
         if (await get_lt6911_power()) == on:
             return
         if on:
+            if await get_lt86102_power():
+                # Splitter stayed up for passthrough: power only the capture
+                # chip so the loop-out monitor keeps its picture.
+                await set_lt6911_power(True)
+                await wait_for_lt6911_ready()
+                if await wait_for_capture_signal(SOFT_WAKE_LOCK_TIMEOUT):
+                    return
+                logger.info("No capture lock after soft wake; cycling HPD")
+            # HPD low while the capture chip comes up, then high so the source
+            # re-reads EDID and re-trains the link.
             await set_lt86102_power(False)
             await set_lt6911_power(True)
             await wait_for_lt6911_ready()
             await set_lt86102_power(True)
         else:
-            await set_lt86102_power(False)
-            await set_lt6911_power(False)
+            if await is_passthrough_on():
+                # Keep the splitter (and the loop-out monitor) running; only
+                # the capture chip and the SoC video-in pipeline go idle.
+                await set_lt6911_power(False)
+            else:
+                await set_lt86102_power(False)
+                await set_lt6911_power(False)
         return
 
 
@@ -382,7 +428,13 @@ async def monitor_activity_loop():
     Periodically check video encoding pipeline (venc) and UI state.
     Provides a 60-second grace period on boot to allow host display negotiation.
     """
+    global _power_off_task
     await asyncio.sleep(60)
+    # The idle timer is otherwise armed only on an active->idle transition, so
+    # a device nobody has viewed since boot would stay powered forever.
+    async with gstate_lock:
+        if not any(gstate.values()) and (_power_off_task is None or _power_off_task.done()):
+            _power_off_task = asyncio.create_task(_delayed_power_off(max(args.idle_timeout, 0)))
     while True:
         try:
             venc = await is_venc_working()

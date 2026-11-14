@@ -301,6 +301,20 @@ mark_booted_slot_good() {
 }
 mark_booted_slot_good
 
+# CPU frequency: with a kernel whose default governor scales (schedutil), keep a
+# 500 MHz floor so interrupt-heavy paths (USB HID, network) stay responsive; the
+# lowest OPP is the 24 MHz crystal. Kernels left on the userspace governor never
+# change frequency, so nothing is done there.
+set_cpufreq_floor() {
+    local policy=/sys/devices/system/cpu/cpufreq/policy0 floor=500000
+    [ -r "$policy/scaling_governor" ] || return 0
+    [ "$(cat "$policy/scaling_governor" 2>/dev/null)" = "schedutil" ] || return 0
+    grep -qw "$floor" "$policy/scaling_available_frequencies" 2>/dev/null || return 0
+    echo "$floor" >"$policy/scaling_min_freq" 2>/dev/null &&
+        echo "$(date) - CPU frequency floor set to ${floor} kHz (schedutil)" >>"$LOG_FILE"
+}
+set_cpufreq_floor
+
 # ensure /bin/sh points to bash
 shell_target=$(readlink /bin/sh)
 if [ "$shell_target" != "bash" ] && [ "$shell_target" != "/bin/bash" ]; then
@@ -359,6 +373,19 @@ read_numeric_param "/boot/force_fps" force_fps
 LT6911_KO="/kvmcomm/ko/lt6911_manage.ko"
 if [ -f "/kvmcomm/ko_$(uname -r)/lt6911_manage.ko" ]; then
     LT6911_KO="/kvmcomm/ko_$(uname -r)/lt6911_manage.ko"
+fi
+
+# Start the driver with loop-out already off when passthrough is disabled, so the
+# splitter's second output is never briefly on. Only a driver that knows the
+# parameter gets it: insmod refuses unknown parameters.
+if [ -f /etc/kvm/hdmi_passthrough ]; then
+    case "$(tr -d ' \t\r\n' </etc/kvm/hdmi_passthrough)" in
+    0 | off)
+        if modinfo -p "$LT6911_KO" 2>/dev/null | grep -q '^loopout:'; then
+            INS_MOD_PARAMS="${INS_MOD_PARAMS:+$INS_MOD_PARAMS }loopout=0"
+        fi
+        ;;
+    esac
 fi
 
 if [ -n "$INS_MOD_PARAMS" ]; then
