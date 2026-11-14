@@ -458,6 +458,15 @@ try_scan() {
     return 0
 }
 
+# True when wpa_supplicant reports COMPLETED and the interface holds an IPv4
+# address.
+wifi_is_connected() {
+    local iface="$1"
+    [[ -S "/run/wpa_supplicant/${iface}" ]] || return 1
+    wpa_cli -i "$iface" status 2>/dev/null | grep -qx 'wpa_state=COMPLETED' || return 1
+    ip -4 -o addr show dev "$iface" 2>/dev/null | grep -q ' inet '
+}
+
 try_connect() {
     local WIFI_IFACE
     local retry=0
@@ -475,13 +484,21 @@ try_connect() {
         echo "true" >"$HW_WIFI_CFG_PATH"
     fi
 
-    local WIFI_CFG_SSID=""
+    # Already associated with a lease (kvmcomm restarted, or a second
+    # trigger): reconnecting would flush the address and restart DHCP.
+    if wifi_is_connected "$WIFI_IFACE"; then
+        debug_print "[wifi] already connected on $WIFI_IFACE; nothing to do"
+        return 0
+    fi
+
+    local WIFI_CFG_SSID="" WIFI_CFG_PASSWD=""
 
     # 1. Try reading SSID from WIFI_CFG_PATH (/etc/kvm/wifi.conf)
     if [[ -r "$WIFI_CFG_PATH" ]]; then
         while IFS="=" read -r key value; do
             case "$key" in
             "WIFI_CFG_SSID") WIFI_CFG_SSID="$value" ;;
+            "WIFI_CFG_PASSWD") WIFI_CFG_PASSWD="$value" ;;
             esac
         done <"$WIFI_CFG_PATH"
     fi
@@ -510,7 +527,19 @@ try_connect() {
 
     debug_print "[wifi] connecting to SSID: $WIFI_CFG_SSID"
 
-    if ! connect_wifi "$WIFI_CFG_SSID"; then
+    # A legacy wifi.conf may carry the passphrase for a network that has no
+    # wpa_supplicant profile yet (this replaces the separate connect_start the
+    # kvmcomm postinst used to fire). Use it only then, so a saved profile is
+    # never duplicated.
+    local migrate_psk=""
+    if [[ -n "$WIFI_CFG_PASSWD" ]]; then
+        start_service
+        if [[ -z "$(find_network_id "$WIFI_IFACE" "$WIFI_CFG_SSID")" ]]; then
+            migrate_psk="$WIFI_CFG_PASSWD"
+        fi
+    fi
+
+    if ! connect_wifi "$WIFI_CFG_SSID" "$migrate_psk"; then
         debug_print "[wifi] error: failed to connect to SSID: $WIFI_CFG_SSID" >&2
         return 4
     fi
