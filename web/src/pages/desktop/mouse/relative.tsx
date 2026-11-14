@@ -3,7 +3,7 @@ import { message } from 'antd';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useTranslation } from 'react-i18next';
 
-import { MouseReportRelative } from '@/lib/mouse.ts';
+import { MouseButtonSource, MouseReportRelative } from '@/lib/mouse.ts';
 import { getScreenElement, inverseRotateDelta } from '@/lib/video-transform.ts';
 import {
   isZoomScrollModeAtom,
@@ -15,6 +15,7 @@ import { videoModeAtom, videoParametersAtom, viewportZoomAtom } from '@/jotai/sc
 import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 
 import {
+  notifyMouseButtonsReleased,
   registerMouseButtonHandler,
   registerMouseReleaseHandler,
   sendMouseRelease,
@@ -78,11 +79,11 @@ export const Relative = () => {
 
       switch (event.type) {
         case 'mousedown':
-          mouse.buttonDown(event.button);
+          mouse.buttonDown(event.button, event.source);
           report = mouse.buildButtonReport();
           break;
         case 'mouseup':
-          mouse.buttonUp(event.button);
+          mouse.buttonUp(event.button, event.source);
           report = mouse.buildButtonReport();
           break;
         case 'wheel':
@@ -210,14 +211,15 @@ export const Relative = () => {
       },
       onButton: (type, button) => {
         flushMouseMove();
-        return handleMouseEvent({ type, button });
+        return handleMouseEvent({ type, button, source: 'touch' });
       },
       onWheel: (deltaY, deltaX) => {
         flushMouseMove();
         handleMouseEvent({ type: 'wheel', deltaY, deltaX });
       },
       onResetButtons: () => {
-        releaseMouse(false, false);
+        // A touch sequence only owns its own buttons; holds from the on-screen controls survive.
+        releaseButtonSource('touch');
       },
       onZoomScrollStateChange: (active) => {
         setIsZoomScrollMode(active);
@@ -244,16 +246,26 @@ export const Relative = () => {
       }
     }
 
-    function releaseMouse(force = false, cancelTouch = true) {
+    function releaseMouse(force = false) {
       flushMouseMove();
       const mouse = mouseRef.current;
       const hadPressedButtons = mouse.hasPressedButtons;
       const report = mouse.reset();
       lastScrollTimeRef.current = 0;
-      touchController.cancel(cancelTouch);
+      touchController.cancel(true);
 
       if (hadPressedButtons || force) {
         sendMouseRelease('relative', report);
+      }
+      notifyMouseButtonsReleased();
+    }
+
+    function releaseButtonSource(source: MouseButtonSource) {
+      flushMouseMove();
+      const mouse = mouseRef.current;
+      if (!mouse.releaseSource(source)) return;
+      if (!sendMouseReport('relative', mouse.buildButtonReport())) {
+        releaseMouse(true);
       }
     }
 
@@ -281,7 +293,7 @@ export const Relative = () => {
     const unregisterMouseReleaseHandler = registerMouseReleaseHandler(releaseMouseAndExitPointerLock);
     const unregisterButtonHandler = registerMouseButtonHandler((type, button) => {
       flushMouseMove();
-      handleMouseEvent({ type, button });
+      handleMouseEvent({ type, button, source: 'controls' });
     });
 
     return () => {
