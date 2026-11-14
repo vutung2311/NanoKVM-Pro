@@ -8,6 +8,10 @@ Type=simple
 ExecStart=/usr/bin/python3 /kvmcomm/scripts/kvm_sleep.py --log-level=INFO
 Restart=on-failure
 RestartSec=5
+# Backstop for a stop that kills Python before its own power-on (SIGKILL after
+# TimeoutStopSec, a crash): leave the capture chip powered, never dark.
+ExecStopPost=-/bin/sh -c 'f=/proc/lt6911_info; [ -e $$f/power ] || exit 0; grep -qx on $$f/power && exit 0; echo 1 > $$f/power; [ -e $$f/hdmi_power ] && ! grep -qx on $$f/hdmi_power && sleep 0.3 && echo 1 > $$f/hdmi_power; exit 0'
+TimeoutStopSec=30
 SyslogIdentifier=kvm-sleep
 User=root
 

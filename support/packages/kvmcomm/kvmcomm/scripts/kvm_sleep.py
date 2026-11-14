@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import signal
 import time
 import fcntl
 import asyncio
@@ -42,24 +43,25 @@ class SleepMsgType:
     ui_ivps_active = 3
 
 
+async def _write_flag(path: str, on: bool):
+    # Errors propagate: the caller must not record a state the hardware never
+    # reached. A proc write the driver rejects fails on close, which aiofiles
+    # surfaces here as an OSError.
+    async with aiofiles.open(path, "w") as f:
+        await f.write("1" if on else "0")
+
+
 async def set_lt86102_power(on: bool):
     path = "/proc/lt6911_info/hdmi_power"
     try:
-        async with aiofiles.open(path, "w") as f:
-            await f.write("1" if on else "0")
+        await _write_flag(path, on)
     except FileNotFoundError:
+        # Older lt6911_manage builds have no splitter control.
         logger.warning(f"{path} does not exist")
-    except Exception as e:
-        logger.error(f"Failed to write {path}: {e}")
 
 
 async def set_lt6911_power(on: bool):
-    path = "/proc/lt6911_info/power"
-    try:
-        async with aiofiles.open(path, "w") as f:
-            await f.write("1" if on else "0")
-    except Exception as e:
-        logger.error(f"Failed to write {path}: {e}")
+    await _write_flag("/proc/lt6911_info/power", on)
 
 
 I2C_SLAVE_FORCE = 0x0706
@@ -121,14 +123,19 @@ async def wait_for_driver_ready(timeout_sec: float = 30.0) -> bool:
     return False
 
 
-async def _read_on(path: str) -> bool:
+async def _read_flag(path: str) -> bool | None:
+    """Read an on/off proc flag; None when it cannot be read."""
     try:
         async with aiofiles.open(path, "r") as f:
             content = await f.read()
         return content.strip() == "on"
     except Exception as e:
         logger.error(f"Failed to read {path}: {e}")
-        return False
+        return None
+
+
+async def _read_on(path: str) -> bool:
+    return bool(await _read_flag(path))
 
 
 async def get_lt6911_power() -> bool:
@@ -173,6 +180,8 @@ class PowerController:
         self._task: asyncio.Task | None = None
         self._current_state: bool | None = None  # None 表示未知（未初始化）
         self._stopping = False
+        # Last target whose hardware write failed; None once one succeeds.
+        self.failed_target: bool | None = None
 
     async def start(self, initial_state: bool | None = None):
         """启动 worker，可传入初始状态（如果已知）"""
@@ -231,23 +240,23 @@ class PowerController:
                         break
                     desired = d
                     futures.append(f)
-                # 如果当前已知状态等于 desired，则直接完成所有 futures
-                if self._current_state is not None and self._current_state == desired:
-                    for f in futures:
-                        if not f.done():
-                            f.set_result(None)
-                    continue
-
+                # No short-circuit on _current_state: the Go server and
+                # kvmcomm.sh write the same proc files, so the cache can be
+                # stale. _do_set reads the hardware and skips redundant work.
                 # 执行真实的上/下电操作（在这里调用你的硬件操作函数）
                 try:
                     logger.info(f"Setting power={'ON' if desired else 'OFF'}")
                     # 调用实际的硬件接口函数：把原先的 set_power 的实现放到 _do_set 中
                     await self._do_set(desired)
                     self._current_state = desired
+                    self.failed_target = None
                     for f in futures:
                         if not f.done():
                             f.set_result(None)
                 except Exception as e:
+                    # Remember the target so monitor_activity_loop retries it.
+                    self._current_state = None
+                    self.failed_target = desired
                     # 任何异常都要通知等待者
                     for f in futures:
                         if not f.done():
@@ -271,9 +280,16 @@ class PowerController:
             raise
 
     async def _do_set(self, on: bool):
-        if (await get_lt6911_power()) == on:
-            return
+        capture = await _read_flag("/proc/lt6911_info/power")
+        splitter = await _read_flag("/proc/lt6911_info/hdmi_power")
         if on:
+            if capture is True and splitter is not False:
+                return
+            if capture is True:
+                # Capture chip is up but the splitter (HPD) was dropped by
+                # another writer: raise it so the source drives the link.
+                await set_lt86102_power(True)
+                return
             if await get_lt86102_power():
                 # Splitter stayed up for passthrough: power only the capture
                 # chip so the loop-out monitor keeps its picture.
@@ -289,7 +305,10 @@ class PowerController:
             await wait_for_lt6911_ready()
             await set_lt86102_power(True)
         else:
-            if await is_passthrough_on():
+            passthrough = await is_passthrough_on()
+            if capture is False and (passthrough or splitter is not True):
+                return
+            if passthrough:
                 # Keep the splitter (and the loop-out monitor) running; only
                 # the capture chip and the SoC video-in pipeline go idle.
                 await set_lt6911_power(False)
@@ -304,6 +323,15 @@ _power_controller = PowerController()
 
 async def set_power(on: bool):
     return await _power_controller.set(on)
+
+
+async def try_set_power(on: bool):
+    """set_power for event paths: a failure is logged, and the monitor loop
+    retries it (PowerController.failed_target)."""
+    try:
+        await set_power(on)
+    except Exception as e:
+        logger.error(f"Power {'ON' if on else 'OFF'} failed, will retry: {e}")
 
 
 async def is_venc_working() -> bool:
@@ -361,7 +389,7 @@ async def _delayed_power_off(delay: float):
             else:
                 logger.info("Activity resumed before idle timeout expired; power-off aborted")
         if should_power_off:
-            await set_power(False)
+            await try_set_power(False)
     except asyncio.CancelledError:
         logger.info("Power-off cancelled due to resumed activity")
     finally:
@@ -393,9 +421,9 @@ async def update_state(key: str, value: bool):
                     action = "power_off"
 
     if action == "power_on":
-        await set_power(True)
+        await try_set_power(True)
     elif action == "power_off":
-        await set_power(False)
+        await try_set_power(False)
     elif isinstance(action, tuple) and action[0] == "schedule_off":
         _power_off_task = asyncio.create_task(_delayed_power_off(action[1]))
 
@@ -437,6 +465,16 @@ async def monitor_activity_loop():
             _power_off_task = asyncio.create_task(_delayed_power_off(max(args.idle_timeout, 0)))
     while True:
         try:
+            if _power_controller.failed_target is not None:
+                target = _power_controller.failed_target
+                logger.info(f"Retrying failed power={'ON' if target else 'OFF'}")
+                async with gstate_lock:
+                    # Skip a stale OFF retry once activity has resumed.
+                    stale = (not target) and any(gstate.values())
+                if stale:
+                    _power_controller.failed_target = None
+                else:
+                    await set_power(target)
             venc = await is_venc_working()
             ui = await is_strip_working()
             if venc != gstate["venc_act"]:
@@ -450,50 +488,85 @@ async def monitor_activity_loop():
         await asyncio.sleep(3)
 
 
+# Upper bound for the power-on on exit; systemd's stop timeout is longer, and
+# kvm-sleep.service's ExecStopPost is the backstop if this is cut short.
+EXIT_POWER_ON_TIMEOUT = 10.0
+
+
+def _install_signal_handlers(main_task: asyncio.Task):
+    """Turn SIGTERM/SIGINT into a cancel of main() so its finally runs.
+
+    Without this, `systemctl stop kvm-sleep` while asleep killed Python
+    before the power-on in finally, leaving the capture chip off.
+    """
+    loop = asyncio.get_running_loop()
+
+    def _on_signal(signame: str):
+        logger.info(f"Received {signame}, shutting down")
+        main_task.cancel()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _on_signal, sig.name)
+
+
 async def main():
-    os.makedirs(os.path.dirname(SOCKET_PATH), exist_ok=True)
-    if os.path.exists(SOCKET_PATH):
-        os.remove(SOCKET_PATH)
+    _install_signal_handlers(asyncio.current_task())
 
-    server = await asyncio.start_unix_server(handle_client, path=SOCKET_PATH)
-    logger.info(f"Server started on {SOCKET_PATH}")
-
-    # Ensure lt6911_manage kernel module has completed initialization
-    await wait_for_driver_ready()
-
-    gstate["venc_act"] = await is_venc_working()
-    gstate["ui_ivps_act"] = await is_strip_working()
-    logger.info(f"Initial state: venc_act={gstate['venc_act']}, ui_ivps_act={gstate['ui_ivps_act']}")
-
-    await _power_controller.start(initial_state=await get_lt6911_power())
-
-    # Keep HDMI powered on at startup so host GPU detects monitor and establishes link
-    if not (await get_lt6911_power()):
-        await set_power(True)
-
-    monitor_task = asyncio.create_task(monitor_activity_loop())
-
+    server = None
+    monitor_task = None
     try:
+        os.makedirs(os.path.dirname(SOCKET_PATH), exist_ok=True)
+        if os.path.exists(SOCKET_PATH):
+            os.remove(SOCKET_PATH)
+
+        server = await asyncio.start_unix_server(handle_client, path=SOCKET_PATH)
+        logger.info(f"Server started on {SOCKET_PATH}")
+
+        # Ensure lt6911_manage kernel module has completed initialization
+        await wait_for_driver_ready()
+
+        gstate["venc_act"] = await is_venc_working()
+        gstate["ui_ivps_act"] = await is_strip_working()
+        logger.info(f"Initial state: venc_act={gstate['venc_act']}, ui_ivps_act={gstate['ui_ivps_act']}")
+
+        await _power_controller.start(initial_state=await _read_flag("/proc/lt6911_info/power"))
+
+        # Keep HDMI powered on at startup so host GPU detects monitor and establishes link
+        try:
+            await set_power(True)
+        except Exception as e:
+            logger.error(f"Initial power-on failed: {e}")
+
+        monitor_task = asyncio.create_task(monitor_activity_loop())
+
         async with server:
             await server.serve_forever()
     except asyncio.CancelledError:
         pass
-    except KeyboardInterrupt:
-        logger.info("Exit requested by user")
     finally:
-        monitor_task.cancel()
+        if monitor_task:
+            monitor_task.cancel()
         if _power_off_task and not _power_off_task.done():
             _power_off_task.cancel()
             try:
                 await _power_off_task
             except asyncio.CancelledError:
                 pass
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
+        if monitor_task:
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+        if server is not None:
+            server.close()
 
-        await set_power(True)
+        # Bypass the queue: the worker may never have started (signal during
+        # startup) or may be mid-request.
+        await _power_controller.stop()
+        try:
+            await asyncio.wait_for(_power_controller._do_set(True), EXIT_POWER_ON_TIMEOUT)
+        except Exception as e:
+            logger.error(f"Power-on at exit failed: {e}")
 
         if os.path.exists(SOCKET_PATH):
             os.remove(SOCKET_PATH)
