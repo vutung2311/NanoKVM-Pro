@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom, useStore } from 'jotai';
 
 import { MouseButtonSource, MouseReportAbsolute } from '@/lib/mouse.ts';
 import {
@@ -40,7 +40,8 @@ export const Absolute = () => {
   const touchMode = useAtomValue(touchModeAtom);
   const videoMode = useAtomValue(videoModeAtom);
   const videoParameters = useAtomValue(videoParametersAtom);
-  const [zoom, setZoom] = useAtom(viewportZoomAtom);
+  // Zoom is read/written through the store so pinch/pan doesn't re-render this layer.
+  const store = useStore();
   const setVirtualCursor = useSetAtom(virtualCursorAtom);
   const setIsZoomScrollMode = useSetAtom(isZoomScrollModeAtom);
 
@@ -54,8 +55,6 @@ export const Absolute = () => {
   touchModeRef.current = touchMode;
   const scrollConfigRef = useRef({ direction: scrollDirection, interval: scrollInterval });
   scrollConfigRef.current = { direction: scrollDirection, interval: scrollInterval };
-  const zoomRef = useRef(zoom);
-  zoomRef.current = zoom;
   const rotationRef = useRef(videoParameters.rotation);
   rotationRef.current = videoParameters.rotation;
 
@@ -192,11 +191,8 @@ export const Absolute = () => {
     const touchController = createTouchGestureController({
       getTouchMode: () => touchModeRef.current,
       getScrollConfig: () => scrollConfigRef.current,
-      getZoom: () => zoomRef.current,
-      setZoom: (next) => {
-        zoomRef.current = next;
-        setZoom(next);
-      },
+      getZoom: () => store.get(viewportZoomAtom),
+      setZoom: (next) => store.set(viewportZoomAtom, next),
       onDirectMove: (clientX, clientY) => {
         const coord = getCoordinate({ clientX, clientY });
         syncNormalizedFromHex(coord.x, coord.y, false);
@@ -204,7 +200,7 @@ export const Absolute = () => {
       },
       onRelativeMove: (dxCss, dyCss) => {
         const box = getRenderedMediaBox(screen, rotationRef.current);
-        const currentScale = Math.max(1, zoomRef.current.scale);
+        const currentScale = Math.max(1, store.get(viewportZoomAtom).scale);
         const baseWidth = Math.max(220, box.width / currentScale);
         const baseHeight = Math.max(160, box.height / currentScale);
         // Square-root zoom damping gives finer precision when zoomed in without needing excessive swipes
@@ -371,7 +367,7 @@ export const Absolute = () => {
       window.removeEventListener('mousemove', handleWindowMouseMove);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [setIsZoomScrollMode, setVirtualCursor, setZoom, videoMode]);
+  }, [setIsZoomScrollMode, setVirtualCursor, store, videoMode]);
 
   function disableEvent(event: Event) {
     event.preventDefault();

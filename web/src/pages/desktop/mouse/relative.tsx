@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { message } from 'antd';
-import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { useTranslation } from 'react-i18next';
 
 import { MouseButtonSource, MouseReportRelative } from '@/lib/mouse.ts';
@@ -35,7 +35,8 @@ export const Relative = () => {
   const touchMode = useAtomValue(touchModeAtom);
   const videoMode = useAtomValue(videoModeAtom);
   const videoParameters = useAtomValue(videoParametersAtom);
-  const [zoom, setZoom] = useAtom(viewportZoomAtom);
+  // Zoom is read/written through the store so pinch/pan doesn't re-render this layer.
+  const store = useStore();
   const setIsZoomScrollMode = useSetAtom(isZoomScrollModeAtom);
 
   const mouseRef = useRef(new MouseReportRelative());
@@ -46,8 +47,6 @@ export const Relative = () => {
   touchModeRef.current = touchMode;
   const scrollConfigRef = useRef({ direction: scrollDirection, interval: scrollInterval });
   scrollConfigRef.current = { direction: scrollDirection, interval: scrollInterval };
-  const zoomRef = useRef(zoom);
-  zoomRef.current = zoom;
   const rotationRef = useRef(videoParameters.rotation);
   rotationRef.current = videoParameters.rotation;
 
@@ -192,13 +191,10 @@ export const Relative = () => {
     const touchController = createTouchGestureController({
       getTouchMode: () => 'trackpad',
       getScrollConfig: () => scrollConfigRef.current,
-      getZoom: () => zoomRef.current,
-      setZoom: (next) => {
-        zoomRef.current = next;
-        setZoom(next);
-      },
+      getZoom: () => store.get(viewportZoomAtom),
+      setZoom: (next) => store.set(viewportZoomAtom, next),
       onRelativeMove: (dxCss, dyCss) => {
-        const damping = 1 / Math.sqrt(Math.max(1, zoomRef.current.scale));
+        const damping = 1 / Math.sqrt(Math.max(1, store.get(viewportZoomAtom).scale));
         const delta = inverseRotateDelta(dxCss * 1.6 * damping, dyCss * 1.6 * damping, rotationRef.current);
         pendingDeltaX += delta.x;
         pendingDeltaY += delta.y;
@@ -319,7 +315,7 @@ export const Relative = () => {
       window.removeEventListener('blur', handleWindowBlur);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [setIsZoomScrollMode, setZoom, videoMode]);
+  }, [setIsZoomScrollMode, store, videoMode]);
 
   function disableEvent(event: Event) {
     event.preventDefault();

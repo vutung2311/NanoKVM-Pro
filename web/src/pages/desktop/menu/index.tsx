@@ -21,7 +21,6 @@ import {
   touchModeAtom,
   virtualCursorAtom
 } from '@/jotai/mouse.ts';
-import { viewportZoomAtom } from '@/jotai/screen.ts';
 import { menuDisabledItemsAtom } from '@/jotai/settings.ts';
 import { useMenuBounds } from '@/hooks/useMenuBounds.ts';
 import { useMenuVisibility } from '@/hooks/useMenuVisibility.ts';
@@ -41,6 +40,7 @@ import { Settings } from './settings';
 import { Terminal } from './terminal';
 import { Volume } from './volume';
 import { Wol } from './wol';
+import { ZoomResetButton } from './zoom-reset.tsx';
 
 export const Menu = () => {
   const { t } = useTranslation();
@@ -53,7 +53,6 @@ export const Menu = () => {
   const isMobileKeyboardOpen = useAtomValue(isMobileKeyboardOpenAtom);
   const [touchMode, setTouchMode] = useAtom(touchModeAtom);
   const [showMouseButtons, setShowMouseButtons] = useAtom(showMobileMouseButtonsAtom);
-  const [zoom, setZoom] = useAtom(viewportZoomAtom);
   const setVirtualCursor = useSetAtom(virtualCursorAtom);
 
   const [isInitialized, setIsInitialized] = useState(false);
@@ -104,12 +103,6 @@ export const Menu = () => {
     setShowMouseButtons(next);
     storage.setMobileMouseButtons(next);
   }
-
-  function resetZoom() {
-    setZoom({ scale: 1, x: 0, y: 0 });
-  }
-
-  const isZoomed = zoom.scale > 1.02;
 
   return (
     <Draggable
@@ -213,18 +206,7 @@ export const Menu = () => {
                     )}
                   />
 
-                  {isZoomed && (
-                    <Button
-                      size="small"
-                      color="primary"
-                      variant="filled"
-                      aria-label={t('screen.resetZoom', { defaultValue: 'Reset zoom' })}
-                      onClick={resetZoom}
-                      className="kvm-touch-target ml-1.5 flex h-[26px] shrink-0 items-center justify-center px-2 text-[11px] font-medium"
-                    >
-                      {zoom.scale.toFixed(1)}×
-                    </Button>
-                  )}
+                  <ZoomResetButton />
                 </div>
 
                 <Divider type="vertical" className="shrink-0" />
