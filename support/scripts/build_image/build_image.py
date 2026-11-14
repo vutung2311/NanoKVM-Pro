@@ -53,6 +53,13 @@ def get_privilege_cmd():
 
 SUDO = get_privilege_cmd()
 
+# qemu-user intermittently segfaults Jammy's static-pie ldconfig (about 1 run
+# in 8) when address space randomization is on, and dpkg's libc-bin trigger
+# runs ldconfig too. setarch -R turns randomization off for the chroot and
+# the qemu interpreter binfmt starts under it. It must come after SUDO: the
+# kernel drops the flag when it executes a setuid binary such as sudo.
+CHROOT = ["setarch", os.uname().machine, "-R", "chroot"]
+
 def ensure_root_privileges():
     if os.geteuid() == 0:
         return
@@ -633,9 +640,9 @@ def run_chroot_commands(mount_point="/mnt", commands=None):
     if commands:
         for cmd in commands:
             full_cmd = f"export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export DEBIAN_FRONTEND=noninteractive; {cmd}"
-            subprocess.run(SUDO + ["chroot", mount_point, "/bin/bash", "-c", full_cmd], check=True)
+            subprocess.run(SUDO + CHROOT + [mount_point, "/bin/bash", "-c", full_cmd], check=True)
     else:
-        subprocess.run(SUDO + ["chroot", mount_point, "/bin/bash"], check=True)
+        subprocess.run(SUDO + CHROOT + [mount_point, "/bin/bash"], check=True)
 
 def is_mounted(path):
     path = os.path.realpath(path)
@@ -707,7 +714,7 @@ echo "[+] Cleanup completed: $removed_count/$total_count files removed"
 rm -f "$remove_file_list"
 '''
 
-    subprocess.run(SUDO + ["chroot", mount_point, "bash", "-c", removal_script], check=True)
+    subprocess.run(SUDO + CHROOT + [mount_point, "bash", "-c", removal_script], check=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build or customize NanoKVM-Pro AXP image")
