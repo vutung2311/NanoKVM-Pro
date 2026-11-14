@@ -38,6 +38,19 @@ ip_is_occupied() {
     fi
 }
 
+# Point DNS for $1 at the given servers. systemd-resolved takes the whole list
+# in one call; without it, add each server to resolv.conf once.
+set_dns() {
+    dev="$1"; shift
+    if command -v resolvectl >/dev/null 2>&1 && resolvectl dns "$dev" "$@" 2>/dev/null; then
+        return 0
+    fi
+    for ns in "$@"; do
+        grep -qx "nameserver $ns" /etc/resolv.conf 2>/dev/null || \
+            printf 'nameserver %s\n' "$ns" >> /etc/resolv.conf
+    done
+}
+
 start() {
     if [ -e /boot/eth.nodhcp ]; then
         while IFS= read -r line || [ -n "$line" ]; do
@@ -53,19 +66,23 @@ start() {
 
             ip_is_occupied "$addr" eth0 || continue
 
-            ip a add "$inet" brd + dev eth0
-            ip r add default via "$gw" dev eth0
-            echo -e "nameserver $gw" >> /etc/resolv.conf
+            # replace, not add: a leftover address or default route from an
+            # earlier plug must not abort the script under set -e.
+            ip a replace "$inet" brd + dev eth0
+            ip r replace default via "$gw" dev eth0
+            set_dns eth0 "$gw"
             break
         done < /boot/eth.nodhcp
 
-        ip a show dev eth0 | grep inet > /dev/null || {
-            dhclient -v eth0
-            ip a show dev eth0 | grep inet > /dev/null
+        ip -4 a show dev eth0 | grep -q " inet " || {
+            # -1: try once and fail, so the reserve address below is used
+            # instead of a dhclient that backgrounds itself and retries.
+            dhclient -1 -v eth0
+            ip -4 a show dev eth0 | grep -q " inet "
         } || {
             inet=$RESERVE_INET
             addr=${inet%/*}
-            ip a add "$inet" brd + dev eth0
+            ip a replace "$inet" brd + dev eth0
         } || exit 1
     else
         dhclient -v "$1"
@@ -84,6 +101,7 @@ down)
         echo "$1 Cable unplugged, releasing DHCP ..."
         pkill -f "dhclient.*$1" || true
         ip addr flush dev "$1"
+        resolvectl revert "$1" 2>/dev/null || true
         ip link set "$1" down
         ;;
 esac
