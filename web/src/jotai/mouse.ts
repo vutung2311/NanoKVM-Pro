@@ -1,5 +1,7 @@
 import { atom } from 'jotai';
 
+import { getTouchMode } from '@/lib/localstorage.ts';
+
 // mouse cursor style
 export const mouseStyleAtom = atom('cursor-default');
 
@@ -14,8 +16,9 @@ export type TouchControlMode = 'trackpad' | 'direct';
 // mouse scroll interval (unit: ms)
 export const scrollIntervalAtom = atom(0);
 
-// mobile touch control mode: virtual trackpad vs direct touch
-export const touchModeAtom = atom<TouchControlMode>('trackpad');
+// touch control mode: virtual trackpad vs direct touch. Defaults to trackpad only on
+// coarse-pointer devices (phones/tablets); touchscreen laptops get direct touch.
+export const touchModeAtom = atom<TouchControlMode>(getTouchMode());
 
 // whether to show floating mouse buttons (L / M / R / Drag Lock) on mobile
 export const showMobileMouseButtonsAtom = atom(false);

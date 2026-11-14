@@ -23,6 +23,7 @@ import {
 } from './lifecycle.ts';
 import { createTouchGestureController } from './touch-gestures.ts';
 import { MouseRelativeEvent } from './types.ts';
+import { getWheelTicks } from './wheel.ts';
 
 export const Relative = () => {
   const { t } = useTranslation();
@@ -173,7 +174,8 @@ export const Relative = () => {
     function handleMouseWheel(e: WheelEvent) {
       disableEvent(e);
 
-      if (e.deltaY === 0 && e.deltaX === 0) {
+      const ticks = getWheelTicks(e, scrollConfigRef.current.direction);
+      if (!ticks) {
         return;
       }
 
@@ -183,10 +185,7 @@ export const Relative = () => {
       }
 
       flushMouseMove();
-      const dir = scrollConfigRef.current.direction;
-      const deltaY = (e.deltaY !== 0 ? (e.deltaY > 0 ? 1 : -1) : 0) * dir;
-      const deltaX = (e.deltaX !== 0 ? (e.deltaX > 0 ? -1 : 1) : 0) * dir;
-      handleMouseEvent({ type: 'wheel', deltaY, deltaX });
+      handleMouseEvent({ type: 'wheel', deltaY: ticks.deltaY, deltaX: ticks.deltaX });
       lastScrollTimeRef.current = currentTime;
     }
 

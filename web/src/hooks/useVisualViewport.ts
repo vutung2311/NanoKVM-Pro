@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+import { detectTouchDevice } from '@/lib/touch-device.ts';
+
 export interface VisualViewportMetrics {
   width: number;
   height: number;
@@ -47,6 +49,22 @@ function readViewportMetrics(): VisualViewportMetrics {
   };
 }
 
+// --visual-vh sizes the screen to the visible area so the on-screen keyboard doesn't cover it.
+// Only touch devices need that. Desktop browsers keep the CSS default (100dvh), and browser
+// pinch-zoom (visualViewport.scale != 1) must not shrink the video against the zoom.
+function syncVisualVh(height: number) {
+  const root = document.documentElement.style;
+  if (!detectTouchDevice()) {
+    root.removeProperty('--visual-vh');
+    return;
+  }
+  const scale = window.visualViewport?.scale ?? 1;
+  if (Math.abs(scale - 1) > 0.01) {
+    return;
+  }
+  root.setProperty('--visual-vh', `${height}px`);
+}
+
 export function useVisualViewport(): VisualViewportMetrics {
   const [metrics, setMetrics] = useState<VisualViewportMetrics>(readViewportMetrics);
 
@@ -55,7 +73,7 @@ export function useVisualViewport(): VisualViewportMetrics {
 
     const syncMetrics = () => {
       const next = readViewportMetrics();
-      document.documentElement.style.setProperty('--visual-vh', `${next.height}px`);
+      syncVisualVh(next.height);
       setMetrics((prev) => {
         if (
           prev.width === next.width &&

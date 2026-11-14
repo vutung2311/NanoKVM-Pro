@@ -28,6 +28,7 @@ import {
 } from './lifecycle.ts';
 import { createTouchGestureController } from './touch-gestures.ts';
 import { MouseAbsoluteEvent } from './types.ts';
+import { getWheelTicks } from './wheel.ts';
 
 interface ReleaseMouseOptions {
   force?: boolean;
@@ -149,7 +150,8 @@ export const Absolute = () => {
     function handleWheel(e: WheelEvent) {
       disableEvent(e);
 
-      if (e.deltaY === 0 && e.deltaX === 0) {
+      const ticks = getWheelTicks(e, scrollConfigRef.current.direction);
+      if (!ticks) {
         return;
       }
 
@@ -162,10 +164,7 @@ export const Absolute = () => {
       const coord = getCoordinate(e);
       lastPosRef.current = coord;
       syncNormalizedFromHex(coord.x, coord.y, false);
-      const dir = scrollConfigRef.current.direction;
-      const deltaY = (e.deltaY !== 0 ? (e.deltaY > 0 ? 1 : -1) : 0) * dir;
-      const deltaX = (e.deltaX !== 0 ? (e.deltaX > 0 ? -1 : 1) : 0) * dir;
-      handleMouseEvent({ type: 'wheel', deltaY, deltaX });
+      handleMouseEvent({ type: 'wheel', deltaY: ticks.deltaY, deltaX: ticks.deltaX });
       lastScrollTimeRef.current = currentTime;
     }
 

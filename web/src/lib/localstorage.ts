@@ -1,3 +1,5 @@
+import { defaultTouchMode } from './touch-device.ts';
+
 const LANGUAGE_KEY = 'nano-kvm-language';
 const VIDEO_MODE_KEY = 'nano-kvm-vide-mode';
 const VIDEO_PARAMETERS_KEY = 'nano-kvm-video-parameters';
@@ -179,7 +181,8 @@ export function setPowerConfirm(enabled: boolean) {
 
 export function getTouchMode(): 'trackpad' | 'direct' {
   const mode = localStorage.getItem(TOUCH_MODE_KEY);
-  return mode === 'direct' ? 'direct' : 'trackpad';
+  if (mode === 'direct' || mode === 'trackpad') return mode;
+  return defaultTouchMode();
 }
 
 export function setTouchMode(mode: 'trackpad' | 'direct') {
