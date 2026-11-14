@@ -4,7 +4,14 @@ import subprocess
 import sys
 import argparse
 import os
+import glob
 import dbus
+
+debug = False
+DATA_DIR = "/data"
+DEFAULT_IMAGE = "/exfat.img"
+# Same options as data.mount, but read-only.
+DATA_RO_OPTIONS = "ro,relatime,fmask=0022,dmask=0022,iocharset=utf8"
 
 def log(*args, **kwargs):
     if debug:
@@ -76,6 +83,32 @@ def install_exfatprogs():
         sys.exit(1)
     log("exfatprogs installed successfully.")
 
+def exported_to_host(path):
+    """True if a USB mass-storage LUN currently serves `path` to the host."""
+    target = os.path.realpath(path)
+    for lun_file in glob.glob("/sys/kernel/config/usb_gadget/*/functions/mass_storage.*/lun.*/file"):
+        try:
+            with open(lun_file) as f:
+                backing = f.read().strip()
+        except OSError:
+            continue
+        if backing and os.path.realpath(backing) == target:
+            return True
+    return False
+
+
+def mount_data_read_only(img_file=DEFAULT_IMAGE):
+    """Mount the image on /data without ever opening it read-write.
+
+    The host owns the image while it is exported; even a brief rw mount
+    writes the exFAT volume-dirty flag into a filesystem the host has open.
+    """
+    if os.path.ismount(DATA_DIR):
+        return run(f"mount -o remount,ro {DATA_DIR}", check=False) == 0
+    os.makedirs(DATA_DIR, exist_ok=True)
+    return run(f"mount -t exfat -o {DATA_RO_OPTIONS} {img_file} {DATA_DIR}", check=False) == 0
+
+
 def manage_data_mount(action):
     bus = dbus.SystemBus()
     systemd = bus.get_object('org.freedesktop.systemd1', '/org/freedesktop/systemd1')
@@ -83,6 +116,12 @@ def manage_data_mount(action):
 
     if action == 'enable':
         mgr.EnableUnitFiles(['data.mount'], False, False)
+        if exported_to_host(DEFAULT_IMAGE):
+            if mount_data_read_only():
+                log("Image is exported to the host; mounted /data read-only")
+            else:
+                log("Image is exported to the host; failed to mount /data read-only")
+            return
         mgr.StartUnit('data.mount', 'replace')
         log("Enabled and started data.mount")
     elif action == 'disable':
@@ -121,31 +160,38 @@ def create_exfat_image(img_file="exfat.img", size_mb=500):
     run(f"mkfs.exfat {img_file}")
     log(f"exFAT image {img_file} created successfully.")
 
-def main():
+def default_image_size_mb():
+    """Image size for `start`: free space minus a 5 GiB reserve; exits if too small."""
+    result = None
     try:
         result = subprocess.run(
             "df -BM /dev/mmcblk0p17 | tail -1 | awk '{print $4}'",
             shell=True, capture_output=True, text=True, check=True
         )
         available_mb = int(result.stdout.strip().replace('M', ''))
-        min_required_mb = 5120
-        default_size = available_mb - 5120
-
-        if default_size < min_required_mb:
-            log(f"[ERROR] Not enough free space on /dev/mmcblk0p17: available {available_mb}MB")
-            sys.exit(1)
     except subprocess.CalledProcessError as e:
         log(f"[ERROR] Failed to check disk space: {e}")
         sys.exit(1)
     except ValueError:
-        log(f"[ERROR] Failed to parse disk space output: '{result.stdout.strip()}'")
+        log(f"[ERROR] Failed to parse disk space output: '{result.stdout.strip() if result else ''}'")
         sys.exit(1)
 
+    min_required_mb = 5120
+    default_size = available_mb - 5120
+    if default_size < min_required_mb:
+        log(f"[ERROR] Not enough free space on /dev/mmcblk0p17: available {available_mb}MB")
+        sys.exit(1)
+    return default_size
+
+
+def main():
+    # The free-space check belongs to `start` only (it sizes a new image).
+    # Run up front, a full disk made `stop` and `remove` fail as well.
     parser = argparse.ArgumentParser(description="Manage exFAT image creation.")
     subparsers = parser.add_subparsers(dest='command', required=True, help='Available commands')
 
     start_parser = subparsers.add_parser('start', help='Create exFAT image and clear data directory')
-    start_parser.add_argument('--size', type=int, default=default_size, help=f'Size of the image in MB (default: {default_size})')
+    start_parser.add_argument('--size', type=int, default=None, help='Size of the image in MB (default: free space minus 5 GiB)')
     start_parser.add_argument('--file', default='/exfat.img', help='Output image file name (default: /exfat.img)')
     start_parser.add_argument('--debug', action='store_true', help='Enable debug output')
     stop_parser = subparsers.add_parser('stop', help='Clear data directory')
@@ -162,9 +208,10 @@ def main():
 
     if args.command == 'start':
         if not os.path.exists(args.file):
+            size = args.size if args.size is not None else default_image_size_mb()
             if not check_exfatprogs():
                 install_exfatprogs()
-            create_exfat_image(img_file=args.file, size_mb=args.size)
+            create_exfat_image(img_file=args.file, size_mb=size)
             clear_data_directory()
         manage_data_mount('enable')
 
@@ -176,6 +223,10 @@ def main():
         manage_data_mount('enable')
 
     elif args.command == 'remove':
+        if exported_to_host(args.file):
+            # Deleting it now would leave the host writing to an unlinked file.
+            print(f"{args.file} is exported to the host; detach the USB disk first", file=sys.stderr)
+            sys.exit(1)
         manage_data_mount('disable')
         if os.path.exists(args.file):
             os.remove(args.file)
