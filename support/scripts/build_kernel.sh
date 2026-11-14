@@ -329,7 +329,10 @@ run_kexec() {
     scp -o StrictHostKeyChecking=accept-new "${IMAGE_OUT}" "${DTB_OUT}" "root@${target_host}:/tmp/"
 
     echo -e "${CYAN}==> Preparing volatile kexec memory handoff on ${target_host}...${RESET}"
-    ssh -o StrictHostKeyChecking=accept-new "root@${target_host}" '
+    # The remote block runs under set -e, so a failed install or `kexec -l`
+    # exits non-zero before the handoff is scheduled. Stop here instead of
+    # waiting for a reboot that will never come.
+    if ! ssh -o StrictHostKeyChecking=accept-new "root@${target_host}" '
         set -e
         if ! command -v kexec >/dev/null 2>&1; then
             echo "[*] Installing kexec-tools..."
@@ -340,9 +343,12 @@ run_kexec() {
         kexec -i -l /tmp/Image --dtb=/tmp/'"${PROJECT}"'.dtb --reuse-cmdline --append="panic=10"
         echo "[*] Scheduling memory handoff in 1 second..."
         sync
-        nohup sh -c "sleep 1 && (systemctl kexec || kexec -e)" >/dev/null 2>&1 &
+        nohup sh -c "sleep 1 && (systemctl kexec || kexec -e)" </dev/null >/dev/null 2>&1 &
         exit 0
-    ' || true
+    '; then
+        echo -e "${RED}[✗] kexec staging failed on ${target_host}; no handoff was scheduled.${RESET}" >&2
+        exit 1
+    fi
 
     echo -e "${GREEN}[✓] kexec handoff command issued! Kernel jumping in RAM.${RESET}"
     echo -e "${CYAN}[*] Waiting for device to reboot and open SSH port 22...${RESET}"
