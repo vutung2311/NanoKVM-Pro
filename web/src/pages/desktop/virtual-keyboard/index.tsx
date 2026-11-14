@@ -83,20 +83,9 @@ export const VirtualKeyboard = () => {
     setKeyboardLayout('default');
   }, [keyboardSystem, keyboardLanguage]);
 
-  useEffect(() => {
-    function handleModifierSync(e: KeyboardEvent | MouseEvent) {
-      if (typeof e.getModifierState === 'function') {
-        setIsCapsLockActive(e.getModifierState('CapsLock'));
-      }
-    }
-
-    window.addEventListener('keydown', handleModifierSync);
-    window.addEventListener('click', handleModifierSync);
-    return () => {
-      window.removeEventListener('keydown', handleModifierSync);
-      window.removeEventListener('click', handleModifierSync);
-    };
-  }, [setIsCapsLockActive]);
+  // Caps state is synced from physical key events in ../keyboard. Do not sync it from
+  // clicks here: a click carries the *local* Caps Lock state, which would overwrite the
+  // toggle onKeyPress just applied for the host.
 
   // Press key
   function onKeyPress(key: string) {
