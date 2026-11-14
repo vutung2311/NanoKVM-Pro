@@ -1,5 +1,8 @@
 [Unit]
 Description=KVM Commom Server
+# /etc/rc.local loads the ax_* media drivers kvm_vin needs. Without this
+# ordering kvm_vin could start first, die, and restart the whole unit.
+After=rc-local.service
 
 [Service]
 Type=simple
