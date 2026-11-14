@@ -16,16 +16,23 @@ declare -A CHILD_PIDS=()
 declare -A FAIL_COUNTS=()
 declare -A WAS_RESTARTED=()
 
-check_log_size() {
-    if [ -f "$LOG_FILE" ]; then
-        local log_size
-        log_size=$(stat -c%s "$LOG_FILE")
-        if [ "$log_size" -gt $((10 * 1024 * 1024)) ]; then
-            echo "$(date) - Log file exceeded 10MB, rotating..." >>"$LOG_FILE"
-            rm -f "$LOG_FILE"
-            echo "$(date) - Log file cleared" >>"$LOG_FILE"
+# Logs live on a size-capped tmpfs (var-log-nanokvm.mount). Cut any *.log that
+# has grown past LOG_MAX_KB back to its last LOG_KEEP_KB, kept as *.log.1, so
+# the newest output is never the part that is lost. O_APPEND writers (the
+# shell redirections) carry on at the new end; du counts allocated blocks, so a
+# writer that does not append (sparse after the cut) is not trimmed in a loop.
+readonly LOG_MAX_KB=2048
+readonly LOG_KEEP_KB=256
+trim_logs() {
+    local f kb
+    for f in "$LOG_DIR"/*.log; do
+        [ -f "$f" ] || continue
+        kb=$(du -k "$f" 2>/dev/null | cut -f1)
+        if [ "${kb:-0}" -gt "$LOG_MAX_KB" ]; then
+            tail -c "${LOG_KEEP_KB}K" "$f" >"$f.1" 2>/dev/null || true
+            : >"$f"
         fi
-    fi
+    done
 }
 
 graceful_stop() {
@@ -107,8 +114,12 @@ makesure_https_crt
 
 trap graceful_stop SIGTERM SIGINT
 
+loop_count=0
 while true; do
-    check_log_size
+    # Every ~60 s (the loop sleeps 2 s).
+    if [ $((loop_count++ % 30)) -eq 0 ]; then
+        trim_logs
+    fi
     for target in "${TARGETS[@]}"; do
         exe_name=$(basename $(echo $target | awk '{print $1}'))
         if ! pgrep -x "$exe_name" >/dev/null; then

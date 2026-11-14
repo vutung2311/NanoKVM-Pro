@@ -110,6 +110,12 @@ fi
 
 ldconfig
 
+# App logs moved to a tmpfs (var-log-nanokvm.mount). Drop the copies that
+# piled up on the eMMC before the mount hides them and they can never be freed.
+if ! mountpoint -q /var/log/nanokvm 2>/dev/null; then
+    rm -f /var/log/nanokvm/*.log /var/log/nanokvm/*.log.1
+fi
+
 mkdir -p /etc/systemd/system/multi-user.target.wants
 [ -f /etc/systemd/system/nanokvm.service ] && ln -sf /etc/systemd/system/nanokvm.service /etc/systemd/system/multi-user.target.wants/nanokvm.service
 

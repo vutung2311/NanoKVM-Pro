@@ -17,6 +17,25 @@ readonly LVDST="/kvmcomm/ui/dst"
 readonly LVFRAME_FORGE="/kvmcomm/ui/frameforge"
 readonly LVSRCS_GEN_CMD="${LVFRAME_FORGE} --auto2 ${LVSRCS} ${LVDST}"
 
+# Logs live on a size-capped tmpfs (var-log-kvmcomm.mount). Cut any *.log that
+# has grown past LOG_MAX_KB back to its last LOG_KEEP_KB, kept as *.log.1, so
+# the newest output is never the part that is lost. O_APPEND writers (the
+# shell redirections) carry on at the new end; du counts allocated blocks, so a
+# writer that does not append (sparse after the cut) is not trimmed in a loop.
+readonly LOG_MAX_KB=2048
+readonly LOG_KEEP_KB=256
+trim_logs() {
+    local f kb
+    for f in "$LOG_DIR"/*.log; do
+        [ -f "$f" ] || continue
+        kb=$(du -k "$f" 2>/dev/null | cut -f1)
+        if [ "${kb:-0}" -gt "$LOG_MAX_KB" ]; then
+            tail -c "${LOG_KEEP_KB}K" "$f" >"$f.1" 2>/dev/null || true
+            : >"$f"
+        fi
+    done
+}
+
 declare -A CHILD_PIDS=()
 declare -A FAIL_COUNTS=()
 declare -A WAS_RESTARTED=()
@@ -458,7 +477,12 @@ echo 0 >/sys/class/backlight/backlight/bl_power
 
 trap graceful_stop SIGTERM SIGINT
 
+loop_count=0
 while true; do
+    # Every ~60 s (the loop sleeps 2 s).
+    if [ $((loop_count++ % 30)) -eq 0 ]; then
+        trim_logs
+    fi
     for target in "${TARGETS[@]}"; do
         exe_name=$(basename $(echo $target | awk '{print $1}'))
         if ! pgrep -f "$exe_name" >/dev/null; then

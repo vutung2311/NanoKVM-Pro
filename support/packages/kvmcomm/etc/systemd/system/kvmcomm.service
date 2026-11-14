@@ -5,6 +5,8 @@ Description=KVM Commom Server
 # restart the whole unit.
 Wants=kvm-board-init.service
 After=kvm-board-init.service
+# App logs live on tmpfs (var-log-kvmcomm.mount), not on the eMMC.
+RequiresMountsFor=/var/log/kvmcomm
 
 [Service]
 Type=simple
