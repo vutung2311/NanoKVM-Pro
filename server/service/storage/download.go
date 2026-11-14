@@ -190,13 +190,16 @@ type loggingWriter struct {
 	totalSize int64
 	ticker    *time.Ticker
 	done      chan struct{}
+	exited    chan struct{} // closed when the ticker goroutine returns
 	stopOnce  sync.Once
 }
 
 func (lw *loggingWriter) startTicker() {
 	lw.ticker = time.NewTicker(2500 * time.Millisecond)
 	lw.done = make(chan struct{})
+	lw.exited = make(chan struct{})
 	go func() {
+		defer close(lw.exited)
 		for {
 			select {
 			case <-lw.done:
@@ -215,6 +218,9 @@ func (lw *loggingWriter) stopTicker() {
 		}
 		if lw.done != nil {
 			close(lw.done)
+			// Wait for an in-flight updateSentinel: it rewrites the sentinel
+			// file, and the caller removes that file right after this returns.
+			<-lw.exited
 		}
 	})
 }
