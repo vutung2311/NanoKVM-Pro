@@ -3,7 +3,10 @@
 package common
 
 import (
+	"runtime"
 	"sync"
+
+	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -13,6 +16,11 @@ var (
 
 func GetKvmVision() *KvmVision {
 	kvmVisionOnce.Do(func() {
+		if runtime.GOARCH == "arm64" {
+			// On the device this means the binary was built with
+			// CGO_ENABLED=0: it runs, but every video read fails.
+			log.Error("built without cgo: video capture is disabled (rebuild with CGO_ENABLED=1)")
+		}
 		kvmVision = &KvmVision{
 			StreamType: STREAM_TYPE_H264_WEBRTC,
 		}
