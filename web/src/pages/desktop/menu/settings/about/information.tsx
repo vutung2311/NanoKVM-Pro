@@ -114,9 +114,9 @@ export const Information = () => {
             </div>
 
             <span>
-              {information.pn && information.pn.trim().toLowerCase() !== 'unknown'
+              {information.pn.trim() && information.pn.trim().toLowerCase() !== 'unknown'
                 ? information.pn.trim()
-                : 'NebE20020'}
+                : 'Unknown'}
             </span>
           </div>
         )}
