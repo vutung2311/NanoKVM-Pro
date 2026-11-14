@@ -1,5 +1,17 @@
 #!/bin/bash
 set -e
+
+# Undo the diversion of ifplugd's stock action script (see postinst) and drop
+# our replacement, so ifplugd's own script is back in action.d.
+case "$1" in
+remove | purge | abort-install)
+    if [ "$(dpkg-divert --listpackage /etc/ifplugd/action.d/ifupdown 2>/dev/null)" = "kvmcomm" ]; then
+        rm -f /etc/ifplugd/action.d/kvmcomm
+        dpkg-divert --package kvmcomm --rename --divert /etc/ifplugd/ifupdown.action.kvmcomm-diverted \
+            --remove /etc/ifplugd/action.d/ifupdown || true
+    fi
+    ;;
+esac
 if [ "$1" = "purge" ]; then
     rm -rf /var/log/kvmcomm >/dev/null 2>&1 || exit 0
 fi

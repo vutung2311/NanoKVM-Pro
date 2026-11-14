@@ -53,20 +53,68 @@ REAL_UID="${PKEXEC_UID:-${SUDO_UID:-$(id -u)}}"
 REAL_GID="${PKEXEC_GID:-${SUDO_GID:-$(id -g)}}"
 PRIV_CMD=""
 
+# Marker appended to temporary build-time /etc/hosts entries so they can be stripped before shipping
+HOSTS_TMP_MARKER="# nanokvm-build-tmp"
+
+# Chroot mount points, innermost first (unmount order)
+CHROOT_MOUNTS=(dev/pts dev/shm dev proc sys)
+
+# List every mount point at or below a path (empty output = nothing mounted).
+# Fails closed: if the mount table cannot be read, report the path itself as mounted.
+mounts_under() {
+    if [[ ! -r /proc/self/mounts ]]; then
+        echo "$1 (mount table unreadable)"
+        return 0
+    fi
+    awk -v p="$1" '$2 == p || index($2, p "/") == 1 { print $2 }' /proc/self/mounts
+}
+
+# Unmount one path non-lazily, retrying while it is busy. Returns non-zero if it stays mounted.
+umount_retry() {
+    local target="$1" i
+    mountpoint -q "${target}" || return 0
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if umount "${target}" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo -e "${RED}[✗] Failed to unmount ${target} after ${i} attempts.${RESET}" >&2
+    return 1
+}
+
+unmount_chroot() {
+    local rc=0 m
+    for m in "${CHROOT_MOUNTS[@]}"; do
+        umount_retry "${WORK_DIR}/mnt/${m}" || rc=1
+    done
+    sync
+    umount_retry "${WORK_DIR}/mnt" || rc=1
+    return $rc
+}
+
 cleanup() {
     local exit_code=$?
+    trap - EXIT INT TERM
+    set +e
     if [[ -d "${WORK_DIR}/mnt" ]]; then
         echo -e "${YELLOW}[*] Cleaning up mounts at ${WORK_DIR}/mnt...${RESET}"
-        umount -l "${WORK_DIR}/mnt/dev/pts" 2>/dev/null || true
-        umount -l "${WORK_DIR}/mnt/dev" 2>/dev/null || true
-        umount -l "${WORK_DIR}/mnt/proc" 2>/dev/null || true
-        umount -l "${WORK_DIR}/mnt/sys" 2>/dev/null || true
-        umount -l "${WORK_DIR}/mnt" 2>/dev/null || true
+        unmount_chroot
     fi
     if [[ -d "${WORK_DIR}" ]]; then
-        rm -rf "${WORK_DIR}" 2>/dev/null || true
+        local remaining
+        remaining="$(mounts_under "${WORK_DIR}")"
+        if [[ -n "${remaining}" ]]; then
+            # Never recurse into a live mount (proc/sys/dev or the image): leave the tree for manual cleanup.
+            echo -e "${RED}[✗] Refusing to delete ${WORK_DIR}: still mounted:${RESET}" >&2
+            echo "${remaining}" >&2
+            echo -e "${RED}    Unmount these manually, then remove ${WORK_DIR}.${RESET}" >&2
+            [[ $exit_code -eq 0 ]] && exit_code=1
+        else
+            rm -rf --one-file-system "${WORK_DIR}"
+        fi
     fi
-    exit $exit_code
+    exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
 
@@ -125,14 +173,44 @@ ${PRIV_CMD} rm -f "${WORK_DIR}/mnt/etc/resolv.conf"
     echo "nameserver 8.8.8.8"
 } | ${PRIV_CMD} tee "${WORK_DIR}/mnt/etc/resolv.conf" >/dev/null
 
-# Ensure ports.ubuntu.com fallback in /etc/hosts to prevent transient DNS failures
-${PRIV_CMD} bash -c "grep -q 'ports.ubuntu.com' '${WORK_DIR}/mnt/etc/hosts' 2>/dev/null || printf '\n91.189.91.102 ports.ubuntu.com\n91.189.91.104 ports.ubuntu.com\n' >> '${WORK_DIR}/mnt/etc/hosts'"
+# Build-time-only ports.ubuntu.com fallback in /etc/hosts to ride out transient DNS failures.
+# Tagged with HOSTS_TMP_MARKER and stripped again in step 8 so it never ships on the device.
+if ! grep -q 'ports.ubuntu.com' "${WORK_DIR}/mnt/etc/hosts" 2>/dev/null; then
+    # Terminate a last line lacking '\n' so the tagged entries (and their later removal) stay separate
+    if [[ -s "${WORK_DIR}/mnt/etc/hosts" && -n "$(tail -c1 "${WORK_DIR}/mnt/etc/hosts")" ]]; then
+        echo | ${PRIV_CMD} tee -a "${WORK_DIR}/mnt/etc/hosts" >/dev/null
+    fi
+    printf '91.189.91.102 ports.ubuntu.com %s\n91.189.91.104 ports.ubuntu.com %s\n' \
+        "${HOSTS_TMP_MARKER}" "${HOSTS_TMP_MARKER}" | ${PRIV_CMD} tee -a "${WORK_DIR}/mnt/etc/hosts" >/dev/null
+fi
 
 ${PRIV_CMD} mount -t proc proc "${WORK_DIR}/mnt/proc"
-${PRIV_CMD} mount -t sysfs sysfs "${WORK_DIR}/mnt/sys"
-${PRIV_CMD} mount -t devtmpfs devtmpfs "${WORK_DIR}/mnt/dev"
-${PRIV_CMD} mkdir -p "${WORK_DIR}/mnt/dev/pts"
-${PRIV_CMD} mount -t devpts devpts "${WORK_DIR}/mnt/dev/pts"
+${PRIV_CMD} mount -t sysfs -o ro sysfs "${WORK_DIR}/mnt/sys"
+# Private /dev: a fresh tmpfs with only the nodes apt/dpkg need, so the chroot never shares
+# (and cleanup can never recurse into) the host's devtmpfs.
+${PRIV_CMD} mount -t tmpfs -o mode=0755,nosuid,size=16M devtmpfs-private "${WORK_DIR}/mnt/dev"
+(
+    cd "${WORK_DIR}/mnt/dev"
+    mknod -m 0666 null    c 1 3
+    mknod -m 0666 zero    c 1 5
+    mknod -m 0666 full    c 1 7
+    mknod -m 0666 random  c 1 8
+    mknod -m 0666 urandom c 1 9
+    mknod -m 0666 tty     c 5 0
+    ln -s /proc/self/fd   fd
+    ln -s /proc/self/fd/0 stdin
+    ln -s /proc/self/fd/1 stdout
+    ln -s /proc/self/fd/2 stderr
+    ln -s pts/ptmx        ptmx
+    mkdir -m 0755 pts
+    mkdir -m 1777 shm
+)
+${PRIV_CMD} mount -t devpts -o newinstance,ptmxmode=0666,mode=0620,gid=5 devpts "${WORK_DIR}/mnt/dev/pts"
+${PRIV_CMD} mount -t tmpfs -o mode=1777,nosuid,nodev shm "${WORK_DIR}/mnt/dev/shm"
+
+# Keep maintainer scripts from starting services (sshd, dnsmasq, ifplugd, ...) inside the chroot
+printf '#!/bin/sh\nexit 101\n' | ${PRIV_CMD} tee "${WORK_DIR}/mnt/usr/sbin/policy-rc.d" >/dev/null
+${PRIV_CMD} chmod 0755 "${WORK_DIR}/mnt/usr/sbin/policy-rc.d"
 
 # 5. Execute APT package installs in chroot
 echo -e "${CYAN}[+] Installing base packages inside ARM64 chroot...${RESET}"
@@ -151,7 +229,8 @@ apt-get install -y --no-install-recommends \
     isc-dhcp-server language-pack-en-base htop bc udev ssh rsyslog iputils-ping \
     python3 alsa-utils udhcpd wpasupplicant avahi-daemon chrony i2c-tools spi-tools \
     udhcpc hostapd rsync etherwake bluez evtest usbutils arping arp-scan zstd dosfstools \
-    e2fsprogs fdisk wireguard-tools iptables curl wget nano vim-tiny networkd-dispatcher cron dnsmasq-base
+    e2fsprogs fdisk wireguard-tools iptables curl wget nano vim-tiny networkd-dispatcher cron dnsmasq-base \
+    ifplugd isc-dhcp-client
 
 # Set default root credentials and hostname
 # Root password must match what reset_to_default.sh restores (stock Sipeed default),
@@ -199,13 +278,19 @@ update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 mkdir -p /etc/systemd/journald.conf.d
 printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' > /etc/systemd/journald.conf.d/00-volatile.conf
 
-# Delegate eth0 dynamically to ifplugd on physical cable carrier, preventing boot dhclient loops
-sed -i '/allow-hotplug eth0/d' /etc/network/interfaces 2>/dev/null || true
+# Delegate eth0 dynamically to ifplugd on physical cable carrier, preventing boot dhclient loops.
+# Only when ifplugd is actually present; otherwise ifupdown must keep bringing eth0 up.
+if [ -x /usr/sbin/ifplugd ]; then
+    sed -i '/allow-hotplug eth0/d' /etc/network/interfaces 2>/dev/null || true
+fi
 
 # Clean up apt caches to save space
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/*
 CHROOT_EOF
+
+# apt phase done: allow services to start normally on the device
+${PRIV_CMD} rm -f "${WORK_DIR}/mnt/usr/sbin/policy-rc.d"
 
 # 6. Overlay Silicon Blobs and Sipeed Board Services
 if [[ -d "${SDK_ROOTFS_DIR}" ]]; then
@@ -221,9 +306,23 @@ if [[ -d "${BLOBS_DIR}/rootfs" ]]; then
     ${PRIV_CMD} chown 0:0 "${WORK_DIR}/mnt/etc/rc.local" 2>/dev/null || true
     ${PRIV_CMD} mkdir -p "${WORK_DIR}/mnt/etc/systemd/system/multi-user.target.wants"
     ${PRIV_CMD} ln -sf /lib/systemd/system/rc-local.service "${WORK_DIR}/mnt/etc/systemd/system/multi-user.target.wants/rc-local.service"
-    if [[ -f "${WORK_DIR}/mnt/opt/swupdate/bin/fw_printenv" ]]; then
-        ${PRIV_CMD} ln -sf /opt/swupdate/bin/fw_printenv "${WORK_DIR}/mnt/usr/bin/fw_printenv"
-        ${PRIV_CMD} ln -sf fw_printenv "${WORK_DIR}/mnt/usr/bin/fw_setenv"
+    # fw_printenv/fw_setenv need the bundled libubootenv in /opt/swupdate/lib. Use per-command
+    # wrappers instead of /etc/ld.so.conf.d: that directory also carries vendor libcurl/libz,
+    # which must not override the system copies for every other program.
+    SWU_BIN="${WORK_DIR}/mnt/opt/swupdate/bin"
+    if [[ -f "${SWU_BIN}/fw_printenv" ]]; then
+        if [[ ! -e "${SWU_BIN}/fw_setenv" ]]; then
+            # libubootenv's tool picks printenv/setenv mode from argv[0]
+            ${PRIV_CMD} ln -s fw_printenv "${SWU_BIN}/fw_setenv"
+        fi
+        for tool in fw_printenv fw_setenv; do
+            # rm first: writing through an existing symlink would clobber the vendor binary
+            ${PRIV_CMD} rm -f "${WORK_DIR}/mnt/usr/bin/${tool}"
+            # shellcheck disable=SC2016 # expanded on the device, not here
+            printf '#!/bin/sh\nLD_LIBRARY_PATH=/opt/swupdate/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} exec /opt/swupdate/bin/%s "$@"\n' "${tool}" \
+                | ${PRIV_CMD} tee "${WORK_DIR}/mnt/usr/bin/${tool}" >/dev/null
+            ${PRIV_CMD} chmod 0755 "${WORK_DIR}/mnt/usr/bin/${tool}"
+        done
     fi
     ${PRIV_CMD} chroot "${WORK_DIR}/mnt" ldconfig || true
 fi
@@ -245,17 +344,26 @@ echo -e "${CYAN}[+] Unmounting chroot filesystems...${RESET}"
 ${PRIV_CMD} rm -f "${WORK_DIR}/mnt/usr/bin/qemu-aarch64-static"
 ${PRIV_CMD} rm -f "${WORK_DIR}/mnt/etc/resolv.conf"
 ${PRIV_CMD} ln -sf ../run/systemd/resolve/stub-resolv.conf "${WORK_DIR}/mnt/etc/resolv.conf"
-${PRIV_CMD} umount -l "${WORK_DIR}/mnt/dev/pts"
-${PRIV_CMD} umount -l "${WORK_DIR}/mnt/dev"
-${PRIV_CMD} umount -l "${WORK_DIR}/mnt/proc"
-${PRIV_CMD} umount -l "${WORK_DIR}/mnt/sys"
-${PRIV_CMD} umount -l "${WORK_DIR}/mnt"
+# Strip the build-time ports.ubuntu.com pins so they do not ship on the device
+${PRIV_CMD} sed -i "/${HOSTS_TMP_MARKER}\$/d" "${WORK_DIR}/mnt/etc/hosts"
+${PRIV_CMD} rm -f "${WORK_DIR}/mnt/usr/sbin/policy-rc.d"
+sync
+if ! unmount_chroot; then
+    echo -e "${RED}[✗] Could not cleanly unmount the rootfs image; refusing to fsck/ship it.${RESET}" >&2
+    exit 1
+fi
 
 # 9. Filesystem check & move to destination
-echo -e "${CYAN}[+] Checking filesystem integrity and zeroing free space...${RESET}"
-${PRIV_CMD} e2fsck -fy "${RAW_IMG}" || true
-${PRIV_CMD} resize2fs -M "${RAW_IMG}" || true
-${PRIV_CMD} resize2fs "${RAW_IMG}" 4500M || true
+echo -e "${CYAN}[+] Checking filesystem integrity and shrinking/regrowing the image...${RESET}"
+# e2fsck: 0 = clean, 1 = errors corrected; anything else means the image is not trustworthy
+fsck_rc=0
+${PRIV_CMD} e2fsck -fy "${RAW_IMG}" || fsck_rc=$?
+if [[ ${fsck_rc} -gt 1 ]]; then
+    echo -e "${RED}[✗] e2fsck failed on ${RAW_IMG} (exit ${fsck_rc}).${RESET}" >&2
+    exit 1
+fi
+${PRIV_CMD} resize2fs -M "${RAW_IMG}"
+${PRIV_CMD} resize2fs "${RAW_IMG}" 4500M
 
 mkdir -p "$(dirname "${OUTPUT_ROOTFS}")" "$(dirname "${CACHED_ROOTFS}")"
 mv -f "${RAW_IMG}" "${OUTPUT_ROOTFS}"

@@ -1,0 +1,9 @@
+# NanoKVM Pro: ifplugd watches the wired port only.
+# On carrier up/down it runs /etc/ifplugd/action.d/kvmcomm (shipped by kvmcomm),
+# which requests a DHCP lease with dhclient (or applies /boot/eth.nodhcp).
+# wlan0 is managed by /kvmcomm/scripts/wifi.sh and usb0 by the USB gadget scripts,
+# so neither is listed here.
+INTERFACES="eth0"
+HOTPLUG_INTERFACES=""
+ARGS="-q -f -u0 -d10 -w -I"
+SUSPEND_ACTION="stop"

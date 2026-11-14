@@ -42,6 +42,28 @@ fi
 
 rm -rf "$USERAPP_TMP_PATH" || true
 
+# ifplugd runs every script in /etc/ifplugd/action.d. Its own "ifupdown"
+# script calls ifup/ifdown, which would start a second DHCP client next to
+# ours (action.d/kvmcomm), so divert it out of action.d. The diverted copy is
+# kept byte-identical to ifplugd's packaged file: dpkg then upgrades it
+# silently (no conffile prompt), and outside action.d it never runs.
+#
+# Older kvmcomm versions overwrote action.d/ifupdown with our script. Where
+# dpkg kept that copy it saved the packaged one as ifupdown.dpkg-dist, so put
+# the packaged file back before diverting it.
+readonly IFPLUGD_STOCK_ACTION=/etc/ifplugd/action.d/ifupdown
+readonly IFPLUGD_STOCK_DIVERTED=/etc/ifplugd/ifupdown.action.kvmcomm-diverted
+if [ "$(dpkg-divert --listpackage "$IFPLUGD_STOCK_ACTION" 2>/dev/null)" != "kvmcomm" ]; then
+    mkdir -p "$(dirname "$IFPLUGD_STOCK_ACTION")"
+    if [ -f "$IFPLUGD_STOCK_ACTION.dpkg-dist" ]; then
+        mv -f "$IFPLUGD_STOCK_ACTION.dpkg-dist" "$IFPLUGD_STOCK_ACTION"
+    fi
+    rm -f "$IFPLUGD_STOCK_DIVERTED" # leftover from a removed diversion; --rename must not overwrite
+    dpkg-divert --package kvmcomm --rename --divert "$IFPLUGD_STOCK_DIVERTED" --add "$IFPLUGD_STOCK_ACTION"
+fi
+# run-parts skips names containing a dot, but keep action.d to our script only.
+rm -f "$IFPLUGD_STOCK_ACTION.dpkg-dist" "$IFPLUGD_STOCK_ACTION.dpkg-old" "$IFPLUGD_STOCK_ACTION.dpkg-new"
+
 if [ -d "$OVERLAY_TARGET_DIR" ]; then
     echo "Copying overlay files from $OVERLAY_TARGET_DIR to / ..."
     rsync -a --no-owner --no-group "$OVERLAY_TARGET_DIR"/ /
@@ -99,8 +121,10 @@ if [ -f /etc/rc.local ]; then
     sed -i '/192\.168\.100\.200/d' /etc/rc.local
 fi
 
-# Delegate eth0 dynamically to ifplugd on physical cable carrier, preventing boot dhclient loops
-if [ -f /etc/network/interfaces ]; then
+# Delegate eth0 dynamically to ifplugd on physical cable carrier, preventing boot dhclient loops.
+# Only strip ifupdown's hotplug stanza when ifplugd is really there to take eth0 over;
+# otherwise Ethernet would never come up.
+if [ -f /etc/network/interfaces ] && [ -x /usr/sbin/ifplugd ]; then
     sed -i '/allow-hotplug eth0/d' /etc/network/interfaces
 fi
 if ip link show eth0 2>/dev/null | grep -q "NO-CARRIER"; then
