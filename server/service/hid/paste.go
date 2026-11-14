@@ -1,7 +1,10 @@
 package hid
 
 import (
+	"context"
+	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -36,10 +39,70 @@ func (s *Service) Paste(c *gin.Context) {
 		return
 	}
 
+	// One paste at a time: two interleaved pastes would type garbage.
+	if !pasteMu.TryLock() {
+		rsp.ErrRsp(c, -4, "another paste is in progress")
+		return
+	}
+	defer pasteMu.Unlock()
+
+	// The request context ends when the client goes away (tab closed,
+	// navigation), so a long paste stops instead of typing on unattended.
+	n, err := typeText(c.Request.Context(), GetHid(), content)
+	switch {
+	case err == nil:
+		rsp.OkRsp(c)
+		log.Debugf("hid paste success, total %d characters processed", n)
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		log.Infof("hid paste cancelled by client after %d characters", n)
+	default:
+		log.Warnf("hid paste aborted after %d characters: %s", n, err)
+		rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
+	}
+}
+
+var pasteMu sync.Mutex
+
+// pasteKeyboard is the part of Hid that typeText uses.
+type pasteKeyboard interface {
+	SubmitKeyboard(report []byte)
+	SubmitKeyboardWait(report []byte, timeout time.Duration) error
+}
+
+// sleepCtx waits for d or until ctx ends.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// typeText types content as HID key presses. It stops at the first rejected
+// report or when ctx ends, and always leaves every key released. It returns
+// the number of characters typed.
+func typeText(ctx context.Context, kb pasteKeyboard, content string) (int, error) {
 	keyUp := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	h := GetHid()
+	typed := 0
+	released := true
+	defer func() {
+		if !released {
+			kb.SubmitKeyboard(keyUp)
+		}
+	}()
+
+	send := func(report []byte) error {
+		released = report[0] == 0 && report[2] == 0
+		return kb.SubmitKeyboardWait(report, pasteReportTimeout)
+	}
 
 	for _, char := range content {
+		if err := ctx.Err(); err != nil {
+			return typed, err
+		}
 		key, ok := CharMap[char]
 		if !ok {
 			log.Debugf("unknown key '%c' (rune: %d)", char, char)
@@ -53,64 +116,49 @@ func (s *Service) Paste(c *gin.Context) {
 			// Discrete modifier sequence: hold modifier before and through the key press
 			// so the target host OS and browser event loop reliably recognize the modifier state.
 			modDown := []byte{mod, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-			if err := h.SubmitKeyboardWait(modDown, pasteReportTimeout); err != nil {
-				h.SubmitKeyboard(keyUp)
-				log.Warnf("hid paste aborted on modDown: %s", err)
-				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
-				return
-			}
-			time.Sleep(15 * time.Millisecond)
-
 			keyDown := []byte{mod, 0x00, code, 0x00, 0x00, 0x00, 0x00, 0x00}
-			if err := h.SubmitKeyboardWait(keyDown, pasteReportTimeout); err != nil {
-				h.SubmitKeyboard(keyUp)
-				log.Warnf("hid paste aborted on keyDown: %s", err)
-				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
-				return
+			steps := []struct {
+				report []byte
+				wait   time.Duration
+			}{
+				{modDown, 15 * time.Millisecond},
+				{keyDown, 25 * time.Millisecond},
+				{modDown, 15 * time.Millisecond}, // release the key, keep the modifier
+				{keyUp, 0},
 			}
-			time.Sleep(25 * time.Millisecond)
-
-			// Release the key while keeping modifier active
-			if err := h.SubmitKeyboardWait(modDown, pasteReportTimeout); err != nil {
-				h.SubmitKeyboard(keyUp)
-				log.Warnf("hid paste aborted on keyRelease: %s", err)
-				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
-				return
-			}
-			time.Sleep(15 * time.Millisecond)
-
-			// Release the modifier
-			if err := h.SubmitKeyboardWait(keyUp, pasteReportTimeout); err != nil {
-				log.Warnf("hid paste aborted on modRelease: %s", err)
-				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
-				return
+			for _, st := range steps {
+				if err := send(st.report); err != nil {
+					return typed, err
+				}
+				if st.wait > 0 {
+					if err := sleepCtx(ctx, st.wait); err != nil {
+						return typed, err
+					}
+				}
 			}
 		} else {
 			keyDown := []byte{0x00, 0x00, code, 0x00, 0x00, 0x00, 0x00, 0x00}
-			if err := h.SubmitKeyboardWait(keyDown, pasteReportTimeout); err != nil {
-				h.SubmitKeyboard(keyUp)
-				log.Warnf("hid paste aborted on keyDown: %s", err)
-				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
-				return
+			if err := send(keyDown); err != nil {
+				return typed, err
 			}
-			time.Sleep(20 * time.Millisecond)
-
-			if err := h.SubmitKeyboardWait(keyUp, pasteReportTimeout); err != nil {
-				log.Warnf("hid paste aborted on keyUp: %s", err)
-				rsp.ErrRsp(c, -3, "host is not accepting keyboard input")
-				return
+			if err := sleepCtx(ctx, 20*time.Millisecond); err != nil {
+				return typed, err
+			}
+			if err := send(keyUp); err != nil {
+				return typed, err
 			}
 		}
+		typed++
 
+		gap := 20 * time.Millisecond
 		if char == '\n' {
-			time.Sleep(100 * time.Millisecond)
-		} else {
-			time.Sleep(20 * time.Millisecond)
+			gap = 100 * time.Millisecond
+		}
+		if err := sleepCtx(ctx, gap); err != nil {
+			return typed, err
 		}
 	}
-
-	rsp.OkRsp(c)
-	log.Debugf("hid paste success, total %d characters processed", len(content))
+	return typed, nil
 }
 
 // pasteReportTimeout bounds how long Paste waits for the host to accept a
