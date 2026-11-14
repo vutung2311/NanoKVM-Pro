@@ -130,6 +130,14 @@ with zipfile.ZipFile('${BASE_AXP}') as z:
         cp -af "${SUPPORT_DIR}/packages/kvmcomm/kvmcomm/scripts/." "${stage_dir}/overlay/kvmcomm/scripts/"
     fi
 
+    # Stage the sshd drop-in that lets the root password set from the web UI work over SSH.
+    # Only this file: the rest of kvmcomm's system overlay is applied by its postinst, and
+    # shipping it here would overwrite live /etc configuration on every update.
+    local sshd_dropin="${SUPPORT_DIR}/packages/kvmcomm/kvmcomm/overlay/etc/ssh/sshd_config.d/10-nanokvm.conf"
+    if [[ -f "${sshd_dropin}" ]]; then
+        install -D -m 644 "${sshd_dropin}" "${stage_dir}/overlay/etc/ssh/sshd_config.d/10-nanokvm.conf"
+    fi
+
     # Strip host Python bytecode caches and ensure no symlinks exist (update_artifact.go rejects non-regular files)
     find "${stage_dir}/overlay" -type d -name "__pycache__" -prune -exec rm -rf {} +
     find "${stage_dir}/overlay" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
