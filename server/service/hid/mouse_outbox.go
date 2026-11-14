@@ -82,11 +82,14 @@ func parseMouseEvent(ev []byte, now time.Time) (mouseEntry, bool) {
 //   - button change, mode switch, or absolute wheel tick: new entry
 func (o *mouseOutbox) add(msg hidMsg) {
 	if msg.release {
-		o.release()
+		o.release(msg.at)
 		return
 	}
 
-	now := o.now()
+	now := msg.at
+	if now.IsZero() {
+		now = o.now()
+	}
 	e, ok := parseMouseEvent(msg.report, now)
 	if !ok {
 		log.Debugf("invalid mouse event: %v", msg.report)
@@ -97,8 +100,11 @@ func (o *mouseOutbox) add(msg hidMsg) {
 
 // release queues button-up reports for whichever device still has buttons
 // held. The absolute release keeps the last position so the cursor doesn't jump.
-func (o *mouseOutbox) release() {
-	now := o.now()
+func (o *mouseOutbox) release(at time.Time) {
+	now := at
+	if now.IsZero() {
+		now = o.now()
+	}
 	if o.relButtons != 0 {
 		o.addEntry(mouseEntry{since: now}, now)
 	}
@@ -187,6 +193,7 @@ func (o *mouseOutbox) pop() {
 // keeping that entry (and any unsent part of it) for the next attempt.
 func (o *mouseOutbox) flush(h *Hid) error {
 	for len(o.entries) > 0 {
+		o.dropStale() // see keyboardOutbox.flush
 		e := &o.entries[0]
 
 		var err error

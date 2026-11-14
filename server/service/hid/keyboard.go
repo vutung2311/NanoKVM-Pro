@@ -36,11 +36,20 @@ func newKeyboardOutbox() *keyboardOutbox {
 	return &keyboardOutbox{now: time.Now}
 }
 
+// stamp returns when msg was submitted, falling back to now for messages
+// that carry no timestamp.
+func (o *keyboardOutbox) stamp(msg hidMsg) time.Time {
+	if msg.at.IsZero() {
+		return o.now()
+	}
+	return msg.at
+}
+
 func (o *keyboardOutbox) add(msg hidMsg) {
 	if msg.release {
 		var zero [keyboardReportLen]byte
 		if o.last != zero {
-			o.append(zero, nil)
+			o.append(zero, nil, o.stamp(msg))
 		}
 		return
 	}
@@ -59,16 +68,15 @@ func (o *keyboardOutbox) add(msg hidMsg) {
 			return // identical consecutive state: invisible to the host
 		}
 	}
-	o.append(r, msg.done)
+	o.append(r, msg.done, o.stamp(msg))
 }
 
-func (o *keyboardOutbox) append(r [keyboardReportLen]byte, done chan error) {
-	now := o.now()
+func (o *keyboardOutbox) append(r [keyboardReportLen]byte, done chan error, since time.Time) {
 	if len(o.entries) >= keyboardOutboxMax {
 		log.Warnf("keyboard outbox full (%d), keeping latest state only", len(o.entries))
 		o.collapse()
 	}
-	o.entries = append(o.entries, kbEntry{report: r, done: done, since: now})
+	o.entries = append(o.entries, kbEntry{report: r, done: done, since: since})
 	o.last = r
 }
 
@@ -118,6 +126,9 @@ func (o *keyboardOutbox) pop(err error) {
 
 func (o *keyboardOutbox) flush(h *Hid) error {
 	for len(o.entries) > 0 {
+		// The writer may have been blocked inside WriteHid0 (device mutex
+		// held during a mode switch); don't replay what went stale meanwhile.
+		o.dropStale()
 		err := h.WriteHid0(o.entries[0].report[:])
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
