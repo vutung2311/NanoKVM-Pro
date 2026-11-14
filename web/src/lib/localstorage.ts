@@ -186,6 +186,16 @@ export function setTouchMode(mode: 'trackpad' | 'direct') {
   localStorage.setItem(TOUCH_MODE_KEY, mode);
 }
 
+const MOBILE_KEYBOARD_LAYOUT_NOTICE_KEY = 'nano-kvm-mobile-keyboard-layout-notice';
+
+export function getMobileKeyboardLayoutNoticeSeen(): boolean {
+  return localStorage.getItem(MOBILE_KEYBOARD_LAYOUT_NOTICE_KEY) === 'true';
+}
+
+export function setMobileKeyboardLayoutNoticeSeen() {
+  localStorage.setItem(MOBILE_KEYBOARD_LAYOUT_NOTICE_KEY, 'true');
+}
+
 export function getMobileMouseButtons(): boolean {
   return localStorage.getItem(MOBILE_MOUSE_BUTTONS_KEY) === 'true';
 }

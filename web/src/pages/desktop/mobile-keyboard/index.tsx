@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from 'antd';
+import { Button, message } from 'antd';
 import clsx from 'clsx';
 import { useAtom, useAtomValue } from 'jotai';
 import {
@@ -11,8 +11,16 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { enqueueHidKeyTap, enqueueHidText, hidTapQueue, resolveHidChar } from '@/lib/char-hid.ts';
+import {
+  countHidTaps,
+  enqueueHidKeyTap,
+  enqueueHidText,
+  hidTapQueue,
+  HidTextResult,
+  MAX_HID_TEXT_CHARS
+} from '@/lib/char-hid.ts';
 import { ModifierBits } from '@/lib/keymap.ts';
+import * as storage from '@/lib/localstorage.ts';
 import { registerMobileKeyboardController } from '@/lib/mobile-keyboard-focus.ts';
 import { isKeyboardEnableAtom, isMobileKeyboardOpenAtom } from '@/jotai/keyboard.ts';
 import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
@@ -81,6 +89,7 @@ export const MobileKeyboard = () => {
   const { t } = useTranslation();
   const isTouchDevice = useTouchDevice();
   const viewport = useVisualViewport();
+  const [messageApi, messageContextHolder] = message.useMessage();
 
   const [isOpen, setIsOpen] = useAtom(isMobileKeyboardOpenAtom);
   const isKeyboardEnable = useAtomValue(isKeyboardEnableAtom);
@@ -124,6 +133,87 @@ export const MobileKeyboard = () => {
     return mask;
   }, []);
 
+  // One-shot modifiers apply to the next key only; locked ones to every key until unlocked.
+  const getModifierMasks = useCallback((state = modifiersRef.current) => {
+    let oneShot = 0;
+    let locked = 0;
+    (Object.keys(MODIFIER_BITS) as ModifierKeyId[]).forEach((id) => {
+      if (state[id] === 'oneshot') oneShot |= MODIFIER_BITS[id];
+      if (state[id] === 'locked') locked |= MODIFIER_BITS[id];
+    });
+    return { oneShot, locked };
+  }, []);
+
+  const resetModifiers = useCallback(() => {
+    setModifiers((prev) =>
+      prev.ctrl === 'off' && prev.alt === 'off' && prev.shift === 'off' && prev.meta === 'off'
+        ? prev
+        : { ctrl: 'off', alt: 'off', shift: 'off', meta: 'off' }
+    );
+  }, []);
+
+  // The host receives US-QWERTY key positions, so other host layouts (AZERTY, QWERTZ, ...) or
+  // host Caps Lock change what appears. Say so once, the first time the keyboard opens.
+  const showLayoutNoticeOnce = useCallback(() => {
+    if (storage.getMobileKeyboardLayoutNoticeSeen()) return;
+    storage.setMobileKeyboardLayoutNoticeSeen();
+    messageApi.info({
+      key: 'mobile-keyboard-layout',
+      duration: 8,
+      content: t('keyboard.mobileLayoutNotice', {
+        defaultValue:
+          'Text is typed as a US-QWERTY keyboard with Caps Lock off. Set the host keyboard layout to US (English) and turn Caps Lock off, or characters may come out wrong.'
+      })
+    });
+  }, [messageApi, t]);
+
+  const reportTextResult = useCallback(
+    (result: HidTextResult) => {
+      if (result.truncated > 0) {
+        messageApi.warning({
+          key: 'mobile-keyboard-truncated',
+          duration: 6,
+          content: t('keyboard.mobileTruncated', {
+            defaultValue:
+              'Only the first {{max}} characters are typed ({{count}} cut off). Hide the keyboard to stop typing.',
+            max: MAX_HID_TEXT_CHARS,
+            count: result.truncated
+          })
+        });
+      }
+
+      if (result.approximated.length > 0 || result.dropped.length > 0) {
+        const unique = (chars: string[]) => Array.from(new Set(chars)).join(' ');
+        const parts: string[] = [];
+        if (result.approximated.length > 0) {
+          parts.push(
+            t('keyboard.mobileApproximated', {
+              defaultValue: 'typed without accents: {{chars}}',
+              chars: unique(result.approximated.map((a) => `${a.from}→${a.to}`))
+            })
+          );
+        }
+        if (result.dropped.length > 0) {
+          parts.push(
+            t('keyboard.mobileDropped', {
+              defaultValue: 'not typed: {{chars}}',
+              chars: unique(result.dropped)
+            })
+          );
+        }
+        messageApi.warning({
+          key: 'mobile-keyboard-unmapped',
+          duration: 4,
+          content: t('keyboard.mobileUnmapped', {
+            defaultValue: 'Some characters have no US-keyboard key ({{details}}).',
+            details: parts.join('; ')
+          })
+        });
+      }
+    },
+    [messageApi, t]
+  );
+
   const clearOneShotModifiers = useCallback(() => {
     setModifiers((prev) => {
       let changed = false;
@@ -150,7 +240,8 @@ export const MobileKeyboard = () => {
       el.focus({ preventScroll: true });
     }
     setIsOpen(true);
-  }, [resetSentinel, setIsOpen]);
+    showLayoutNoticeOnce();
+  }, [resetSentinel, setIsOpen, showLayoutNoticeOnce]);
 
   const blurInput = useCallback(() => {
     if (blurTimerRef.current) {
@@ -164,9 +255,9 @@ export const MobileKeyboard = () => {
     el?.blur();
     setIsOpen(false);
     setShowFnRow(false);
-    setModifiers({ ctrl: 'off', alt: 'off', shift: 'off', meta: 'off' });
+    resetModifiers();
     hidTapQueue.clear();
-  }, [setIsOpen]);
+  }, [resetModifiers, setIsOpen]);
 
   const toggleInput = useCallback(() => {
     const el = textareaRef.current;
@@ -255,13 +346,14 @@ export const MobileKeyboard = () => {
 
     const currentText = rawValue.replace(/\u200B/g, '');
     const prevText = committedTextRef.current;
-    const extraMod = getActiveModifierMask();
+    const { oneShot, locked } = getModifierMasks();
+    const keyMod = (index: number) => locked | (index === 0 ? oneShot : 0);
 
     // Case 1: Backspace pressed when no user text was in the buffer (sentinel shrunk)
     if (prevText.length === 0 && currentText.length === 0 && sentinelCount < SENTINEL.length) {
       const deletedCount = SENTINEL.length - sentinelCount;
       for (let i = 0; i < deletedCount; i++) {
-        enqueueHidKeyTap('Backspace', i === 0 ? extraMod : 0);
+        enqueueHidKeyTap('Backspace', keyMod(i));
       }
       clearOneShotModifiers();
       resetSentinel();
@@ -280,20 +372,20 @@ export const MobileKeyboard = () => {
     // Only emit Backspace for removed characters that actually produced a HID keystroke on the host
     let backspacesNeeded = 0;
     for (let i = commonLen; i < prevChars.length; i++) {
-      if (resolveHidChar(prevChars[i])) {
-        backspacesNeeded++;
-      }
+      backspacesNeeded += countHidTaps(prevChars[i]);
     }
     const appendedText = currChars.slice(commonLen).join('');
 
     for (let i = 0; i < backspacesNeeded; i++) {
-      enqueueHidKeyTap('Backspace', i === 0 && appendedText.length === 0 ? extraMod : 0);
+      enqueueHidKeyTap('Backspace', appendedText.length === 0 ? keyMod(i) : 0);
     }
 
     if (appendedText.length > 0) {
-      if (enqueueHidText(appendedText, extraMod)) {
+      const result = enqueueHidText(appendedText, oneShot, locked);
+      if (result.typed) {
         clearOneShotModifiers();
       }
+      reportTextResult(result);
     } else if (backspacesNeeded > 0) {
       clearOneShotModifiers();
     }
@@ -326,6 +418,7 @@ export const MobileKeyboard = () => {
       resetSentinel();
     }
     setIsOpen(true);
+    showLayoutNoticeOnce();
   }
 
   function handleBlur() {
@@ -349,6 +442,9 @@ export const MobileKeyboard = () => {
       committedTextRef.current = '';
       setIsOpen(false);
       setShowFnRow(false);
+      // The OS hid the keyboard: drop sticky modifiers so the next key after reopening isn't
+      // silently a Ctrl/Alt chord.
+      resetModifiers();
     }, 100);
   }
 
@@ -396,6 +492,7 @@ export const MobileKeyboard = () => {
 
   return (
     <>
+      {messageContextHolder}
       {/* Hidden sentinel textarea anchored at (0,0) with 16px font so iOS Safari never zooms or scrolls on focus */}
       <textarea
         ref={textareaRef}

@@ -115,9 +115,34 @@ export const CHAR_TO_HID: Record<string, HidCharEntry> = {
   '?': { modifier: S, code: KeycodeMap.Slash }
 };
 
-function sendRawKeyboardReport(modifier: number, keycode: number) {
+// Typographic characters that iOS/Android "smart punctuation" substitutes for ASCII. Without
+// this they have no HID mapping and silently vanish (don't -> dont).
+const TYPOGRAPHIC_TO_ASCII: Record<string, string> = {
+  '\u2018': "'", // ‘
+  '\u2019': "'", // ’
+  '\u201A': "'", // ‚
+  '\u201B': "'", // ‛
+  '\u2032': "'", // ′
+  '\u201C': '"', // “
+  '\u201D': '"', // ”
+  '\u201E': '"', // „
+  '\u201F': '"', // ‟
+  '\u2033': '"', // ″
+  '\u2010': '-', // ‐
+  '\u2011': '-', // ‑
+  '\u2012': '-', // ‒
+  '\u2013': '-', // –
+  '\u2014': '-', // —
+  '\u2212': '-', // −
+  '\u2026': '...', // …
+  '\u00A0': ' ', // no-break space
+  '\u202F': ' ', // narrow no-break space
+  '\u2009': ' ' // thin space
+};
+
+function sendRawKeyboardReport(modifier: number, keycode: number): boolean {
   const packet = new Uint8Array([MessageEvent.Keyboard, modifier, 0, keycode, 0, 0, 0, 0, 0]);
-  client.send(packet);
+  return client.send(packet);
 }
 
 const STEP_DELAY_MS = 12;
@@ -130,6 +155,8 @@ interface QueuedTap {
 class HidTapQueue {
   private queue: QueuedTap[] = [];
   private processing = false;
+  // Bumped by clear(): an in-flight tap from an older generation stops sending.
+  private generation = 0;
 
   enqueue(modifier: number, code: number) {
     this.queue.push({ modifier, code });
@@ -138,31 +165,51 @@ class HidTapQueue {
     }
   }
 
+  get pending() {
+    return this.queue.length;
+  }
+
   clear() {
     this.queue = [];
+    this.generation++;
     sendRawKeyboardReport(0, 0);
   }
 
   private async drain() {
     this.processing = true;
-    while (this.queue.length > 0) {
-      const next = this.queue.shift()!;
-      if (next.modifier !== 0) {
-        sendRawKeyboardReport(next.modifier, 0);
-        await sleep(STEP_DELAY_MS);
+    try {
+      while (this.queue.length > 0) {
+        const gen = this.generation;
+        const next = this.queue.shift()!;
+        // Any failed send means the socket is gone or not writable: drop the rest instead of
+        // losing characters now and resuming mid-string after a reconnect.
+        const send = (modifier: number, code: number) =>
+          gen === this.generation && sendRawKeyboardReport(modifier, code);
+
+        let ok = true;
+        if (next.modifier !== 0) {
+          ok = send(next.modifier, 0);
+          if (ok) await sleep(STEP_DELAY_MS);
+        }
+        if (ok) ok = send(next.modifier, next.code);
+        if (ok) await sleep(STEP_DELAY_MS);
+        if (ok && next.modifier !== 0) {
+          ok = send(next.modifier, 0);
+          if (ok) await sleep(8);
+        }
+        if (ok) ok = send(0, 0);
+
+        if (!ok) {
+          if (gen === this.generation) this.clear();
+          continue;
+        }
+        if (this.queue.length > 0) {
+          await sleep(STEP_DELAY_MS);
+        }
       }
-      sendRawKeyboardReport(next.modifier, next.code);
-      await sleep(STEP_DELAY_MS);
-      if (next.modifier !== 0) {
-        sendRawKeyboardReport(next.modifier, 0);
-        await sleep(8);
-      }
-      sendRawKeyboardReport(0, 0);
-      if (this.queue.length > 0) {
-        await sleep(STEP_DELAY_MS);
-      }
+    } finally {
+      this.processing = false;
     }
-    this.processing = false;
   }
 }
 
@@ -172,19 +219,43 @@ function sleep(ms: number) {
 
 export const hidTapQueue = new HidTapQueue();
 
-export function resolveHidChar(ch: string): HidCharEntry | undefined {
-  if (CHAR_TO_HID[ch]) {
-    return CHAR_TO_HID[ch];
+// A dropped connection must not keep typing into the next one.
+client.onClose(() => hidTapQueue.clear());
+
+// Longest insert typed in one go (~40 ms per character, so about 80 s).
+export const MAX_HID_TEXT_CHARS = 2000;
+
+type ResolvedChar =
+  | { kind: 'exact'; entries: HidCharEntry[] }
+  | { kind: 'approximate'; entries: HidCharEntry[]; sent: string }
+  | { kind: 'dropped' };
+
+function resolveChar(ch: string): ResolvedChar {
+  const exact = CHAR_TO_HID[ch];
+  if (exact) {
+    return { kind: 'exact', entries: [exact] };
   }
-  if (ch === 'đ') {
-    return CHAR_TO_HID.d;
+
+  const ascii = TYPOGRAPHIC_TO_ASCII[ch];
+  if (ascii) {
+    return { kind: 'exact', entries: Array.from(ascii).map((c) => CHAR_TO_HID[c]) };
   }
-  if (ch === 'Đ') {
-    return CHAR_TO_HID.D;
+
+  // Fall back to the base ASCII letter if a mobile IME (e.g. Telex/accented keyboard) composed a
+  // diacritic. The host gets a different character, so callers must surface this.
+  const base = ch === 'đ' ? 'd' : ch === 'Đ' ? 'D' : ch.normalize('NFD')[0];
+  const baseEntry = base ? CHAR_TO_HID[base] : undefined;
+  if (baseEntry) {
+    return { kind: 'approximate', entries: [baseEntry], sent: base };
   }
-  // Fall back to base ASCII letter if a mobile IME (e.g. Telex/accented keyboard) composed a diacritic
-  const base = ch.normalize('NFD')[0];
-  return base ? CHAR_TO_HID[base] : undefined;
+
+  return { kind: 'dropped' };
+}
+
+// Number of HID taps the character produces on the host (0 when it can't be typed).
+export function countHidTaps(ch: string): number {
+  const resolved = resolveChar(ch);
+  return resolved.kind === 'dropped' ? 0 : resolved.entries.length;
 }
 
 export function enqueueHidKeyTap(codeName: string, extraModifier = 0) {
@@ -193,15 +264,46 @@ export function enqueueHidKeyTap(codeName: string, extraModifier = 0) {
   hidTapQueue.enqueue(extraModifier, code);
 }
 
-export function enqueueHidText(text: string, firstCharExtraModifier = 0): boolean {
-  let consumedModifier = false;
-  for (const ch of Array.from(text)) {
-    const entry = resolveHidChar(ch);
-    if (!entry) continue;
+export interface HidTextResult {
+  // At least one key was typed (so a one-shot modifier was consumed).
+  typed: boolean;
+  // Characters typed as something else, e.g. 'é' -> 'e'.
+  approximated: { from: string; to: string }[];
+  // Characters with no key on a US layout; nothing was typed for them.
+  dropped: string[];
+  // Characters cut off past MAX_HID_TEXT_CHARS.
+  truncated: number;
+}
 
-    const extra = !consumedModifier ? firstCharExtraModifier : 0;
-    consumedModifier = true;
-    hidTapQueue.enqueue(entry.modifier | extra, entry.code);
+// Types text as US-QWERTY key taps. `oneShotModifier` applies to the first key only;
+// `lockedModifier` applies to every key.
+export function enqueueHidText(
+  text: string,
+  oneShotModifier = 0,
+  lockedModifier = 0
+): HidTextResult {
+  const result: HidTextResult = { typed: false, approximated: [], dropped: [], truncated: 0 };
+  let chars = Array.from(text);
+  if (chars.length > MAX_HID_TEXT_CHARS) {
+    result.truncated = chars.length - MAX_HID_TEXT_CHARS;
+    chars = chars.slice(0, MAX_HID_TEXT_CHARS);
   }
-  return consumedModifier;
+
+  for (const ch of chars) {
+    const resolved = resolveChar(ch);
+    if (resolved.kind === 'dropped') {
+      result.dropped.push(ch);
+      continue;
+    }
+    if (resolved.kind === 'approximate') {
+      result.approximated.push({ from: ch, to: resolved.sent });
+    }
+
+    for (const entry of resolved.entries) {
+      const extra = lockedModifier | (!result.typed ? oneShotModifier : 0);
+      result.typed = true;
+      hidTapQueue.enqueue(entry.modifier | extra, entry.code);
+    }
+  }
+  return result;
 }
