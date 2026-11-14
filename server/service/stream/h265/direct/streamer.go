@@ -3,37 +3,27 @@ package direct
 import (
 	"NanoKVM-Server/common"
 	"NanoKVM-Server/service/stream"
-	"bytes"
+	"NanoKVM-Server/service/stream/fanout"
 	"encoding/binary"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
 )
 
 type Streamer struct {
-	mutex          sync.Mutex
-	clients        map[*websocket.Conn]bool
-	clientSnapshot atomic.Pointer[[]*websocket.Conn]
-	running        int32
+	hub     *fanout.Hub
+	running int32
 }
 
 func newStreamer() *Streamer {
-	s := &Streamer{
-		clients: make(map[*websocket.Conn]bool),
-	}
-	s.updateClientSnapshotLocked()
-
-	return s
+	return &Streamer{hub: fanout.NewHub(true)}
 }
 
-func (s *Streamer) addClient(ws *websocket.Conn) {
-	s.mutex.Lock()
-	s.clients[ws] = true
-	s.updateClientSnapshotLocked()
-	s.mutex.Unlock()
+// addClient registers a viewer and starts the capture loop if needed. The
+// caller must drain the returned client (see writeLoop) and removeClient it.
+func (s *Streamer) addClient() *fanout.Client {
+	c, _ := s.hub.Add()
 
 	common.GetKvmVision().SetStreamType(common.STREAM_TYPE_H265_DIRECT)
 
@@ -41,50 +31,34 @@ func (s *Streamer) addClient(ws *websocket.Conn) {
 		go s.run()
 		log.Debug("h265 stream started")
 	}
+	return c
 }
 
-func (s *Streamer) removeClient(ws *websocket.Conn) {
-	s.mutex.Lock()
-	delete(s.clients, ws)
-	count := s.updateClientSnapshotLocked()
-	s.mutex.Unlock()
-
+func (s *Streamer) removeClient(c *fanout.Client) {
+	count := s.hub.Remove(c)
 	log.Debugf("h265 websocket disconnected, remaining clients: %d", count)
 }
 
-func (s *Streamer) updateClientSnapshotLocked() int {
-	clients := make([]*websocket.Conn, 0, len(s.clients))
-	for client := range s.clients {
-		clients = append(clients, client)
-	}
-	s.clientSnapshot.Store(&clients)
-
-	return len(clients)
-}
-
-func (s *Streamer) getClients() []*websocket.Conn {
-	clients := s.clientSnapshot.Load()
-	if clients == nil {
-		return nil
-	}
-
-	return *clients
-}
-
 func (s *Streamer) run() {
-	defer atomic.StoreInt32(&s.running, 0)
+	defer func() {
+		atomic.StoreInt32(&s.running, 0)
+		// A client that joined while this loop was exiting found it still
+		// marked running and did not start a new one.
+		if s.hub.Len() > 0 && atomic.CompareAndSwapInt32(&s.running, 0, 1) {
+			go s.run()
+		}
+	}()
 
-	duration := stream.GetStreamTickerDuration()
-	ticker := time.NewTicker(duration)
+	ticker := stream.NewPollTicker()
 	defer ticker.Stop()
 
 	screen := common.GetScreen()
 	vision := common.GetKvmVision()
 	startTime := time.Now()
 
-	for range ticker.C {
-		clients := s.getClients()
-		if len(clients) == 0 {
+	for range ticker.C() {
+		ticker.Refresh()
+		if s.hub.Len() == 0 {
 			log.Debug("h265 stream stopped due to no clients")
 			return
 		}
@@ -108,48 +82,23 @@ func (s *Streamer) run() {
 
 		timestamp := time.Since(startTime).Microseconds()
 
-		err := s.send(clients, isKeyFrame, timestamp, data)
+		s.hub.Broadcast(packFrame(isKeyFrame == 1, timestamp, data))
 		stream.PutFrameBuffer(bufPtr)
-		if err != nil {
-			continue
-		}
 
 		stream.GetFrameRateCounter().Update()
 	}
 }
 
-func (s *Streamer) send(clients []*websocket.Conn, isKeyFrame byte, timestamp int64, data []byte) error {
-	buf := stream.BufferPool.Get().(*bytes.Buffer)
-	defer stream.BufferPool.Put(buf)
-
-	buf.Reset()
-
-	if err := buf.WriteByte(isKeyFrame); err != nil {
-		log.Errorf("failed to write keyframe flag: %s", err)
-		return err
+// packFrame builds the wire message: 1 byte keyframe flag, 8 bytes
+// little-endian timestamp (µs), then the encoded frame.
+func packFrame(key bool, timestamp int64, data []byte) *fanout.Msg {
+	m := fanout.NewMsg(9+len(data), key)
+	if key {
+		m.Data[0] = 1
+	} else {
+		m.Data[0] = 0
 	}
-
-	var tsBytes [8]byte
-	binary.LittleEndian.PutUint64(tsBytes[:], uint64(timestamp))
-	if _, err := buf.Write(tsBytes[:]); err != nil {
-		log.Errorf("failed to write timestamp: %s", err)
-		return err
-	}
-
-	if _, err := buf.Write(data); err != nil {
-		log.Errorf("failed to write h265 data: %s", err)
-		return err
-	}
-
-	for _, client := range clients {
-		_ = client.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
-		if err := client.WriteMessage(websocket.BinaryMessage, buf.Bytes()); err != nil {
-			log.Errorf("failed to write message to client %s: %s.", client.RemoteAddr(), err)
-
-			s.removeClient(client)
-			_ = client.Close()
-		}
-	}
-
-	return nil
+	binary.LittleEndian.PutUint64(m.Data[1:9], uint64(timestamp))
+	copy(m.Data[9:], data)
+	return m
 }

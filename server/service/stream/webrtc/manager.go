@@ -106,13 +106,13 @@ func (m *WebRTCManager) sendVideoStream() {
 	vision := common.GetKvmVision()
 	m.updateStatus(0)
 
-	duration := stream.GetStreamTickerDuration()
-	ticker := time.NewTicker(duration)
+	ticker := stream.NewPollTicker()
 	defer ticker.Stop()
 
 	startTime := time.Now()
 
-	for range ticker.C {
+	for range ticker.C() {
+		ticker.Refresh()
 		if m.GetClientCount() == 0 {
 			log.Debugf("stop sending h264 stream")
 			return

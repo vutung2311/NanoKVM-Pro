@@ -15,8 +15,8 @@ func Connect(c *gin.Context) {
 	c.Header("Pragma", "no-cache")
 	c.Header("X-Server-Date", time.Now().Format(time.RFC1123))
 
-	streamer.AddClient(c)
-	defer streamer.RemoveClient(c)
+	client := streamer.AddClient()
+	defer streamer.RemoveClient(client)
 
-	<-c.Request.Context().Done()
+	serve(c, client)
 }
