@@ -3,6 +3,9 @@ package hid
 import (
 	"errors"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -60,9 +63,43 @@ func (h *Hid) Unlock() {
 	h.mouseMutex.Unlock()
 }
 
+// gadgetFunctionsDir is where the USB gadget's HID functions are configured.
+var gadgetFunctionsDir = "/sys/kernel/config/usb_gadget/g0/functions"
+
+// readReportLength returns the configured report length of a gadget HID
+// function, or 0 if it cannot be read.
+func readReportLength(function string) int {
+	b, err := os.ReadFile(filepath.Join(gadgetFunctionsDir, function, "report_length"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// detectLegacyReportLengths sets the legacy flags from the gadget's own
+// configuration. f_hidg truncates over-long writes silently instead of
+// failing, so the EINVAL fallback in WriteHid1/2 alone never triggers on a
+// gadget configured for 4-byte relative or 6-byte absolute reports, and the
+// extra byte (horizontal scroll) would be dropped without notice.
+func (h *Hid) detectLegacyReportLengths() {
+	if readReportLength("hid.GS1") == 4 {
+		h.legacyHid1 = true
+		log.Infof("%s uses 4-byte reports (legacy gadget): horizontal scroll is unavailable", HID1)
+	}
+	if readReportLength("hid.GS2") == 6 {
+		h.legacyHid2 = true
+		log.Infof("%s uses 6-byte reports (legacy gadget): horizontal scroll is unavailable", HID2)
+	}
+}
+
 func (h *Hid) OpenNoLock() {
 	var err error
 	h.CloseNoLock()
+	h.detectLegacyReportLengths()
 
 	h.g0, err = os.OpenFile(HID0, os.O_WRONLY, 0o666)
 	if err != nil {
