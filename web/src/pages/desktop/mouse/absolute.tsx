@@ -193,7 +193,16 @@ export const Absolute = () => {
       getScrollConfig: () => scrollConfigRef.current,
       getZoom: () => store.get(viewportZoomAtom),
       setZoom: (next) => store.set(viewportZoomAtom, next),
-      onDirectMove: (clientX, clientY) => {
+      onDirectMove: (clientX, clientY, queued) => {
+        if (queued) {
+          // Coalesce to one report (and one layout read) per frame; button events flush first.
+          pendingClientPos = { clientX, clientY };
+          if (moveRafId === null) {
+            moveRafId = requestAnimationFrame(flushMouseMove);
+          }
+          return true;
+        }
+        flushMouseMove();
         const coord = getCoordinate({ clientX, clientY });
         syncNormalizedFromHex(coord.x, coord.y, false);
         return handleMouseEvent({ type: 'move', x: coord.x, y: coord.y });

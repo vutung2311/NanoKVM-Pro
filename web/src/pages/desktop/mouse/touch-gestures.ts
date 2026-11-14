@@ -12,7 +12,12 @@ export interface TouchGestureOptions {
   getScrollConfig: () => { direction: number; interval: number };
   getZoom: () => ViewportZoomState;
   setZoom: (next: ViewportZoomState) => void;
-  onDirectMove?: (clientX: number, clientY: number) => boolean;
+  /**
+   * Move the pointer to a client position. `queued` moves may be coalesced to one send per
+   * animation frame (button events flush them first); the first contact is sent at once so a
+   * failed send can cancel the sequence.
+   */
+  onDirectMove?: (clientX: number, clientY: number, queued: boolean) => boolean;
   onRelativeMove: (dxCss: number, dyCss: number) => boolean;
   onButton: (type: 'mousedown' | 'mouseup', button: number) => boolean;
   onWheel: (deltaY: number, deltaX: number, clientX: number, clientY: number) => void;
@@ -83,6 +88,10 @@ export function createTouchGestureController(options: TouchGestureOptions) {
   let twoFingerTapEligible = false;
   let pinchScaleUnlocked = false;
   let scrollLockedByHold = false;
+  // Set once a wheel tick has been sent for the current two-finger pair.
+  let twoFingerWheelSent = false;
+  // Viewport rect measured once per gesture; the zoom transform is on a child, so it is stable.
+  let surfaceRect: DOMRect | null = null;
   let zoomScrollBadgeActive = false;
   let scrollAccX = 0;
   let scrollAccY = 0;
@@ -205,6 +214,8 @@ export function createTouchGestureController(options: TouchGestureOptions) {
     twoFingerTapEligible = false;
     pinchScaleUnlocked = false;
     scrollLockedByHold = false;
+    twoFingerWheelSent = false;
+    surfaceRect = null;
     momentumStartedThisGesture = false;
     stoppedCoastingOnTouchStart = false;
     scrollAccX = 0;
@@ -245,6 +256,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
     multiMode = 'undecided';
     pinchScaleUnlocked = false;
     scrollLockedByHold = false;
+    twoFingerWheelSent = false;
     momentumStartedThisGesture = false;
     prevMultiMoveTime = now;
     lastMultiMoveTime = 0;
@@ -323,16 +335,16 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       if (deltaY !== 0 || deltaX !== 0) {
         options.onWheel(deltaY, deltaX, anchorX, anchorY);
         lastScrollTime = now;
+        twoFingerWheelSent = true;
       }
     }
   }
 
-  function clampZoom(scale: number, x: number, y: number, surface: HTMLElement): ViewportZoomState {
+  function clampZoom(scale: number, x: number, y: number, rect: DOMRect): ViewportZoomState {
     if (scale <= 1.02) {
       return { scale: 1, x: 0, y: 0 };
     }
     const clampedScale = Math.min(5, Math.max(1, scale));
-    const rect = surface.getBoundingClientRect();
     const maxPanX = (rect.width * (clampedScale - 1)) / 2;
     const maxPanY = (rect.height * (clampedScale - 1)) / 2;
 
@@ -356,6 +368,13 @@ export function createTouchGestureController(options: TouchGestureOptions) {
         }
       }
       return result;
+    }
+
+    function getSurfaceRect(): DOMRect {
+      if (!surfaceRect) {
+        surfaceRect = surface.getBoundingClientRect();
+      }
+      return surfaceRect;
     }
 
     function findPair(touches: Touch[]): [Touch, Touch] | null {
@@ -391,6 +410,8 @@ export function createTouchGestureController(options: TouchGestureOptions) {
         pairIds = null;
         twoFingerTapEligible = false;
         scrollLockedByHold = false;
+        twoFingerWheelSent = false;
+        surfaceRect = null;
         momentumStartedThisGesture = false;
       }
 
@@ -449,7 +470,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
 
       if (mode === 'direct' && options.onDirectMove) {
         isDoubleTapCandidate = false;
-        if (!options.onDirectMove(touch.clientX, touch.clientY)) {
+        if (!options.onDirectMove(touch.clientX, touch.clientY, false)) {
           sequenceCanceled = true;
           return;
         }
@@ -548,7 +569,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
           const currentZoom = options.getZoom();
           const ratio = pinchScaleUnlocked ? m.dist / prevPinchDist : 1;
           const nextScale = Math.min(5, Math.max(1, currentZoom.scale * ratio));
-          const rect = surface.getBoundingClientRect();
+          const rect = getSurfaceRect();
           const cx = rect.left + rect.width / 2;
           const cy = rect.top + rect.height / 2;
           const effectiveRatio = nextScale / currentZoom.scale;
@@ -556,7 +577,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
           const nextX = m.midX - cx - (prevMidX - cx - currentZoom.x) * effectiveRatio;
           const nextY = m.midY - cy - (prevMidY - cy - currentZoom.y) * effectiveRatio;
 
-          options.setZoom(clampZoom(nextScale, nextX, nextY, surface));
+          options.setZoom(clampZoom(nextScale, nextX, nextY, rect));
         } else if (multiMode === 'scroll') {
           const now = Date.now();
           const dt = Math.max(4, now - prevMultiMoveTime);
@@ -606,7 +627,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
         }
 
         if (isDragging || isLongPress) {
-          options.onDirectMove(touch.clientX, touch.clientY);
+          options.onDirectMove(touch.clientX, touch.clientY, true);
         }
         prevX = touch.clientX;
         prevY = touch.clientY;
@@ -677,10 +698,15 @@ export function createTouchGestureController(options: TouchGestureOptions) {
 
         if (touches.length === 0) {
           const duration = Date.now() - twoFingerStartTime;
+          // While zoomed, the hold timer can switch to scroll mode inside the tap window
+          // (180 ms < 280 ms). That still counts as a tap if no wheel tick went out.
+          const stillTap =
+            multiMode === 'undecided' ||
+            (multiMode === 'scroll' && scrollLockedByHold && !twoFingerWheelSent);
           if (
             twoFingerTapEligible &&
             maxTouchCount === 2 &&
-            multiMode === 'undecided' &&
+            stillTap &&
             duration <= 280 &&
             maxMidDelta <= 14 &&
             maxPinchDelta <= PINCH_LOCK_PX
@@ -691,6 +717,8 @@ export function createTouchGestureController(options: TouchGestureOptions) {
           maxTouchCount = 0;
           twoFingerTapEligible = false;
           scrollLockedByHold = false;
+          twoFingerWheelSent = false;
+          surfaceRect = null;
           momentumStartedThisGesture = false;
           stoppedCoastingOnTouchStart = false;
           multiMode = 'undecided';
@@ -742,7 +770,12 @@ export function createTouchGestureController(options: TouchGestureOptions) {
     surface.addEventListener('touchcancel', handleTouchCancel, { passive: false });
 
     return () => {
+      // Send any pending tap mouseup rather than dropping it, then stop every timer so
+      // nothing fires into a detached surface.
+      flushPendingTapReleases();
+      clearAllTimers();
       stopScrollMomentum();
+      setZoomScrollActive(false);
       surface.removeEventListener('touchstart', handleTouchStart);
       surface.removeEventListener('touchmove', handleTouchMove);
       surface.removeEventListener('touchend', handleTouchEnd);
