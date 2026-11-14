@@ -390,7 +390,7 @@ get_kernel_release() {
         kver=$(make -s -C "${LINUX_SRC}" ARCH="${ARCH}" kernelrelease 2>/dev/null || true)
     fi
     if [[ -z "${kver}" ]]; then
-        kver="4.19.325"
+        kver="4.19.125"
     fi
     echo "${kver}"
 }

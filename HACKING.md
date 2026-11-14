@@ -130,8 +130,8 @@
     # 1. Compile module (~3s)
     make -C support/kernel/linux/linux-4.19.125 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=drivers/misc modules
     # 2. Deploy & reload live (~3s)
-    scp support/kernel/linux/linux-4.19.125/drivers/misc/lt6911_manage.ko root@<IP>:/kvmcomm/ko_4.19.325/
-    ssh root@<IP> "systemctl stop kvmcomm && rmmod lt6911_manage && insmod /kvmcomm/ko_4.19.325/lt6911_manage.ko && systemctl start kvmcomm"
+    scp support/kernel/linux/linux-4.19.125/drivers/misc/lt6911_manage.ko root@<IP>:/kvmcomm/ko_4.19.125/
+    ssh root@<IP> "systemctl stop kvmcomm && rmmod lt6911_manage && insmod /kvmcomm/ko_4.19.125/lt6911_manage.ko && systemctl start kvmcomm"
     ```
 - [x] **Step 15: End-to-End In-System Firmware Update Packaging (`make firmware-pkg` & `make firmware-flash`):**
   * **Unified Recompile & Packaging Recipe:** Added [`support/scripts/package_firmware.sh`](file:///home/tung/Git/NanoKVM-Pro/support/scripts/package_firmware.sh) and Makefile targets `make firmware-pkg` (alias: `make update-pkg`) and `make firmware-flash IP=<ip>` (alias: `make update-flash`).
