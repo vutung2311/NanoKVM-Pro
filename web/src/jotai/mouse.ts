@@ -30,5 +30,9 @@ export const virtualCursorAtom = atom({
   visible: false
 });
 
+// Just the visibility bit, for components that mount the overlay. Its position changes every
+// frame while gliding, so read that with store.get / store.sub, not useAtomValue.
+export const virtualCursorVisibleAtom = atom((get) => get(virtualCursorAtom).visible);
+
 // whether 2-finger hold-to-scroll is actively engaged while zoomed in
 export const isZoomScrollModeAtom = atom(false);

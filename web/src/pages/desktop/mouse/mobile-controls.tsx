@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button, Divider } from 'antd';
 import clsx from 'clsx';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useStore } from 'jotai';
 import { ArrowUpDownIcon, LockIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import { hasTouchInput } from '@/lib/touch-device.ts';
 import { getRenderedMediaBox, getScreenElement, rotatePoint } from '@/lib/video-transform.ts';
 import { isMobileKeyboardOpenAtom } from '@/jotai/keyboard.ts';
 import {
@@ -12,7 +13,8 @@ import {
   mouseModeAtom,
   showMobileMouseButtonsAtom,
   touchModeAtom,
-  virtualCursorAtom
+  virtualCursorAtom,
+  virtualCursorVisibleAtom
 } from '@/jotai/mouse.ts';
 import { videoModeAtom, videoParametersAtom, viewportZoomAtom } from '@/jotai/screen.ts';
 import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
@@ -22,18 +24,22 @@ import { onMouseButtonsReleased, triggerMouseButtonAction } from './lifecycle.ts
 export const MobileMouseControls = () => {
   const { t } = useTranslation();
   const isTouchDevice = useTouchDevice();
+  // Also on touchscreen laptops: touch handlers run there and trackpad mode needs the cursor.
+  const hasTouch = isTouchDevice || hasTouchInput();
+  const store = useStore();
   const mouseMode = useAtomValue(mouseModeAtom);
   const touchMode = useAtomValue(touchModeAtom);
   const showButtons = useAtomValue(showMobileMouseButtonsAtom);
-  const virtualCursor = useAtomValue(virtualCursorAtom);
+  const virtualCursorVisible = useAtomValue(virtualCursorVisibleAtom);
   const videoMode = useAtomValue(videoModeAtom);
   const videoParameters = useAtomValue(videoParametersAtom);
-  const zoom = useAtomValue(viewportZoomAtom);
   const isMobileKeyboardOpen = useAtomValue(isMobileKeyboardOpenAtom);
   const isZoomScrollMode = useAtomValue(isZoomScrollModeAtom);
 
   const [dragLocked, setDragLocked] = useState(false);
-  const [cursorScreenPos, setCursorScreenPos] = useState<{ x: number; y: number } | null>(null);
+  const cursorRef = useRef<HTMLDivElement | null>(null);
+  const rotationRef = useRef(videoParameters.rotation);
+  rotationRef.current = videoParameters.rotation;
   const pressedButtonsRef = useRef<Set<number>>(new Set());
   const dragLockedRef = useRef(false);
   dragLockedRef.current = dragLocked;
@@ -77,75 +83,71 @@ export const MobileMouseControls = () => {
     };
   }, []);
 
-  // Project normalized host coordinates (0..1) onto the rendered media element on screen
-  useEffect(() => {
-    if (
-      !isTouchDevice ||
-      !virtualCursor.visible ||
-      touchMode !== 'trackpad' ||
-      mouseMode !== 'absolute'
-    ) {
-      setCursorScreenPos(null);
-      return;
-    }
+  // Project normalized host coordinates (0..1) onto the rendered media element on screen.
+  // The cursor moves every animation frame while gliding, so subscribe once per overlay
+  // lifetime and write the transform directly in rAF instead of re-rendering/re-subscribing.
+  const showCursorOverlay =
+    hasTouch && virtualCursorVisible && touchMode === 'trackpad' && mouseMode === 'absolute';
+
+  useLayoutEffect(() => {
+    const el = cursorRef.current;
+    if (!showCursorOverlay || !el) return;
 
     const screen = getScreenElement();
-    if (!screen) {
-      setCursorScreenPos(null);
-      return;
-    }
+    let rafId: number | null = null;
 
     const updatePosition = () => {
+      rafId = null;
       const currentScreen = getScreenElement();
       if (!currentScreen) {
-        setCursorScreenPos(null);
+        el.style.visibility = 'hidden';
         return;
       }
 
-      const box = getRenderedMediaBox(currentScreen, videoParameters.rotation);
-      const rotated = rotatePoint(virtualCursor.x, virtualCursor.y, videoParameters.rotation);
-      setCursorScreenPos({
-        x: box.left + rotated.x * box.width,
-        y: box.top + rotated.y * box.height
-      });
+      const cursor = store.get(virtualCursorAtom);
+      const rotation = rotationRef.current;
+      const box = getRenderedMediaBox(currentScreen, rotation);
+      const rotated = rotatePoint(cursor.x, cursor.y, rotation);
+      const x = box.left + rotated.x * box.width;
+      const y = box.top + rotated.y * box.height;
+      el.style.visibility = '';
+      el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    };
+
+    const schedule = () => {
+      if (rafId === null) {
+        rafId = requestAnimationFrame(updatePosition);
+      }
     };
 
     updatePosition();
 
+    const unsubscribeCursor = store.sub(virtualCursorAtom, schedule);
+    const unsubscribeZoom = store.sub(viewportZoomAtom, schedule);
     const vv = window.visualViewport;
-    const resizeObserver = new ResizeObserver(updatePosition);
-    resizeObserver.observe(screen);
+    const resizeObserver = new ResizeObserver(schedule);
+    if (screen) resizeObserver.observe(screen);
 
-    window.addEventListener('resize', updatePosition);
-    vv?.addEventListener('resize', updatePosition);
-    vv?.addEventListener('scroll', updatePosition);
-    screen.addEventListener('loadedmetadata', updatePosition);
-    screen.addEventListener('load', updatePosition);
+    window.addEventListener('resize', schedule);
+    vv?.addEventListener('resize', schedule);
+    vv?.addEventListener('scroll', schedule);
+    screen?.addEventListener('loadedmetadata', schedule);
+    screen?.addEventListener('load', schedule);
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      unsubscribeCursor();
+      unsubscribeZoom();
       resizeObserver.disconnect();
-      window.removeEventListener('resize', updatePosition);
-      vv?.removeEventListener('resize', updatePosition);
-      vv?.removeEventListener('scroll', updatePosition);
-      screen.removeEventListener('loadedmetadata', updatePosition);
-      screen.removeEventListener('load', updatePosition);
+      window.removeEventListener('resize', schedule);
+      vv?.removeEventListener('resize', schedule);
+      vv?.removeEventListener('scroll', schedule);
+      screen?.removeEventListener('loadedmetadata', schedule);
+      screen?.removeEventListener('load', schedule);
     };
-  }, [
-    isTouchDevice,
-    mouseMode,
-    touchMode,
-    videoMode,
-    videoParameters.rotation,
-    videoParameters.scale,
-    virtualCursor.visible,
-    virtualCursor.x,
-    virtualCursor.y,
-    zoom.scale,
-    zoom.x,
-    zoom.y
-  ]);
+  }, [showCursorOverlay, store, videoMode, videoParameters.rotation, videoParameters.scale]);
 
-  if (!isTouchDevice) {
+  if (!hasTouch) {
     return null;
   }
 
@@ -209,13 +211,11 @@ export const MobileMouseControls = () => {
       )}
 
       {/* Local zero-latency cursor indicator in Trackpad + Absolute mode */}
-      {cursorScreenPos && (
+      {showCursorOverlay && (
         <div
+          ref={cursorRef}
           aria-hidden="true"
           className="pointer-events-none fixed left-0 top-0 z-[950]"
-          style={{
-            transform: `translate3d(${cursorScreenPos.x}px, ${cursorScreenPos.y}px, 0)`
-          }}
         >
           <svg
             width="20"
