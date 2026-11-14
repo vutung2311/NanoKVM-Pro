@@ -2,6 +2,7 @@ package utils
 
 import (
 	"errors"
+	"github.com/coreos/go-systemd/v22/dbus"
 	"sync"
 	"testing"
 )
@@ -39,5 +40,29 @@ func TestSystemctlClient_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 
-	resetSystemctlClient()
+	client, _ := getSystemctlClient()
+	resetSystemctlClient(client)
+}
+
+// A reset for a connection that has already been replaced must not close the
+// current one.
+func TestResetSystemctlClientIgnoresStaleConnection(t *testing.T) {
+	systemctlClientMu.Lock()
+	saved := systemctlClient
+	current := &dbus.Conn{}
+	systemctlClient = current
+	systemctlClientMu.Unlock()
+	defer func() {
+		systemctlClientMu.Lock()
+		systemctlClient = saved
+		systemctlClientMu.Unlock()
+	}()
+
+	resetSystemctlClient(&dbus.Conn{}) // a different, stale connection
+	systemctlClientMu.Lock()
+	still := systemctlClient == current
+	systemctlClientMu.Unlock()
+	if !still {
+		t.Fatal("reset of a stale connection replaced the current client")
+	}
 }
