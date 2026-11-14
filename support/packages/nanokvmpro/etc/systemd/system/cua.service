@@ -17,7 +17,11 @@ StandardOutput=journal
 StandardError=journal
 
 WorkingDirectory=/kvmapp/cua
-ExecStart=/kvmapp/cua/cua_webapp.py
+# --auth, as the server passes when the web UI starts the assistant: without
+# it every endpoint (screen capture, mouse, keyboard) is open to the network.
+# The app keeps listening on 0.0.0.0:5000 because the web UI opens
+# http://<device>:5000/ directly in the browser; localhost would break it.
+ExecStart=/kvmapp/cua/cua_webapp.py --auth
 
 PermissionsStartOnly=true
 ExecStartPre=/bin/chown -R root:root /kvmapp/cua
