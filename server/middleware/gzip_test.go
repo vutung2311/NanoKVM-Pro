@@ -58,6 +58,25 @@ func setupTestRouter() *gin.Engine {
 		_, _ = c.Writer.Write([]byte("chunk2"))
 	})
 
+	r.GET("/test-partial", func(c *gin.Context) {
+		c.Header("Content-Range", "bytes 0-4/10")
+		c.Data(http.StatusPartialContent, "text/plain", []byte("01234"))
+	})
+
+	r.GET("/test-png", func(c *gin.Context) {
+		c.Data(http.StatusOK, "image/png", []byte("\x89PNG fake"))
+	})
+
+	r.GET("/test-vary", func(c *gin.Context) {
+		c.Header("Vary", "Origin")
+		c.String(http.StatusOK, "vary payload")
+	})
+
+	r.GET("/test-flush-first", func(c *gin.Context) {
+		c.Writer.Flush()
+		_, _ = c.Writer.Write([]byte("after flush"))
+	})
+
 	return r
 }
 
@@ -221,5 +240,60 @@ func TestGzipFlusher(t *testing.T) {
 
 	if string(decompressed) != "chunk1chunk2" {
 		t.Errorf("expected 'chunk1chunk2', got '%s'", string(decompressed))
+	}
+}
+
+func get(r *gin.Engine, path string, hdr map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("GET", path, nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestGzipSkipsPartialContent(t *testing.T) {
+	w := get(setupTestRouter(), "/test-partial", nil)
+	if w.Header().Get("Content-Encoding") != "" || w.Body.String() != "01234" {
+		t.Fatalf("206 was modified: enc=%q body=%q", w.Header().Get("Content-Encoding"), w.Body.String())
+	}
+}
+
+func TestGzipSkipsRangeRequests(t *testing.T) {
+	w := get(setupTestRouter(), "/test-string", map[string]string{"Range": "bytes=0-3"})
+	if w.Header().Get("Content-Encoding") != "" {
+		t.Fatal("range request was gzipped")
+	}
+}
+
+func TestGzipSkipsCompressedTypes(t *testing.T) {
+	w := get(setupTestRouter(), "/test-png", nil)
+	if w.Header().Get("Content-Encoding") != "" || w.Body.String() != "\x89PNG fake" {
+		t.Fatal("png was gzipped")
+	}
+}
+
+func TestGzipKeepsExistingVary(t *testing.T) {
+	w := get(setupTestRouter(), "/test-vary", nil)
+	vary := w.Header().Values("Vary")
+	if len(vary) != 2 || vary[0] != "Origin" || vary[1] != "Accept-Encoding" {
+		t.Fatalf("Vary = %v, want [Origin Accept-Encoding]", vary)
+	}
+}
+
+func TestGzipFlushBeforeWriteSetsEncoding(t *testing.T) {
+	w := get(setupTestRouter(), "/test-flush-first", nil)
+	if w.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", w.Header().Get("Content-Encoding"))
+	}
+	zr, err := gzip.NewReader(w.Body)
+	if err != nil {
+		t.Fatalf("body is not gzip: %v", err)
+	}
+	b, _ := io.ReadAll(zr)
+	if string(b) != "after flush" {
+		t.Fatalf("body = %q", b)
 	}
 }
