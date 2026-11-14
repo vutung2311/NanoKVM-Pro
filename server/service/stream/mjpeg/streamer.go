@@ -77,28 +77,40 @@ func (s *Streamer) run() {
 			continue
 		}
 
-		screen.Check()
-		bufPtr := stream.FrameBufferPool.Get().(*[]byte)
-		data, result := vision.ReadMjpegInto(screen.Width, screen.Height, screen.Quality, bufPtr)
-		if result < 0 || len(data) == 0 {
-			stream.PutFrameBuffer(bufPtr)
+		params := screen.Check()
+		// One copy: the JPEG goes straight into its multipart part.
+		var msg *fanout.Msg
+		n, result := vision.ReadMjpegTo(params.Width, params.Height, params.Quality, func(n int) []byte {
+			var body []byte
+			msg, body = newPart(n)
+			return body
+		})
+		if result < 0 || n == 0 {
+			if msg != nil {
+				msg.Release()
+			}
 			continue
 		}
-
-		s.hub.Broadcast(packFrame(data))
-		stream.PutFrameBuffer(bufPtr)
+		s.hub.Broadcast(msg)
 
 		stream.GetFrameRateCounter().Update()
 	}
 }
 
-// packFrame wraps a JPEG in one multipart/x-mixed-replace part.
+// newPart allocates one multipart/x-mixed-replace part for an n-byte JPEG
+// and returns it with the slice the JPEG must be copied into.
+func newPart(n int) (*fanout.Msg, []byte) {
+	header := "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + strconv.Itoa(n) + "\r\n\r\n"
+	m := fanout.NewMsg(len(header)+n+2, true)
+	h := copy(m.Data, header)
+	copy(m.Data[h+n:], "\r\n")
+	return m, m.Data[h : h+n]
+}
+
+// packFrame wraps an already-read JPEG in one part.
 func packFrame(data []byte) *fanout.Msg {
-	header := "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + strconv.Itoa(len(data)) + "\r\n\r\n"
-	m := fanout.NewMsg(len(header)+len(data)+2, true)
-	n := copy(m.Data, header)
-	n += copy(m.Data[n:], data)
-	copy(m.Data[n:], "\r\n")
+	m, body := newPart(len(data))
+	copy(body, data)
 	return m
 }
 

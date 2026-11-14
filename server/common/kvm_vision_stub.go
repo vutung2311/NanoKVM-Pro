@@ -79,3 +79,15 @@ func (k *KvmVision) SetGop(gop uint8) int {
 
 func (k *KvmVision) Close() {
 }
+
+func (k *KvmVision) ReadMjpegTo(width, height, quality uint16, alloc func(n int) []byte) (int, int) {
+	return 0, -1
+}
+
+func (k *KvmVision) ReadH264To(width, height, bitRate uint16, alloc func(n int) []byte) (int, int) {
+	return 0, -1
+}
+
+func (k *KvmVision) ReadH265To(width, height, bitRate uint16, alloc func(n int) []byte) (int, int) {
+	return 0, -1
+}

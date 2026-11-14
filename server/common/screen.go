@@ -66,7 +66,52 @@ func GetScreen() *Screen {
 	return screen
 }
 
-func (s *Screen) Check() {
+// ScreenParams is a consistent copy of the stream parameters. Settings
+// handlers write Screen while capture loops read it, so readers take a
+// snapshot under the lock instead of reading fields directly.
+type ScreenParams struct {
+	Width           uint16
+	Height          uint16
+	StreamType      int
+	RateControlMode uint8
+	BitRate         uint16
+	FPS             uint8
+	GOP             uint8
+	Quality         uint16
+	RealFPS         int
+}
+
+func (s *Screen) paramsLocked() ScreenParams {
+	return ScreenParams{
+		Width:           s.Width,
+		Height:          s.Height,
+		StreamType:      s.StreamType,
+		RateControlMode: s.RateControlMode,
+		BitRate:         s.BitRate,
+		FPS:             s.FPS,
+		GOP:             s.GOP,
+		Quality:         s.Quality,
+		RealFPS:         s.RealFPS,
+	}
+}
+
+// Snapshot returns the current parameters without refreshing them.
+func (s *Screen) Snapshot() ScreenParams {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.paramsLocked()
+}
+
+// Update changes parameters under the lock.
+func (s *Screen) Update(fn func(s *Screen)) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	fn(s)
+}
+
+// Check refreshes the resolution (at most every 5 s), clamps invalid values
+// and returns a snapshot to use for one frame read.
+func (s *Screen) Check() ScreenParams {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -99,6 +144,7 @@ func (s *Screen) Check() {
 	if s.Quality < 1 || s.Quality > 100 {
 		s.Quality = 80
 	}
+	return s.paramsLocked()
 }
 
 func readSize(filePath string) uint16 {

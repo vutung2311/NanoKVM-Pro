@@ -44,54 +44,6 @@ func TestPutAudioBuffer_NilSafe(t *testing.T) {
 	PutAudioBuffer(nil)
 }
 
-func TestPutFrameBuffer_ResetOversized(t *testing.T) {
-	oversized := make([]byte, MaxPooledFrameBufferSize+1024)
-	bufPtr := &oversized
-
-	PutFrameBuffer(bufPtr)
-
-	if cap(*bufPtr) > MaxPooledFrameBufferSize {
-		t.Fatalf("expected oversized buffer to be reset to cap <= %d, got %d", MaxPooledFrameBufferSize, cap(*bufPtr))
-	}
-	if len(*bufPtr) != DefaultFrameBufferSize {
-		t.Fatalf("expected reset buffer len %d, got %d", DefaultFrameBufferSize, len(*bufPtr))
-	}
-}
-
-func TestPutAudioBuffer_ResetOversized(t *testing.T) {
-	oversized := make([]byte, MaxPooledAudioBufferSize+1024)
-	bufPtr := &oversized
-
-	PutAudioBuffer(bufPtr)
-
-	if cap(*bufPtr) > MaxPooledAudioBufferSize {
-		t.Fatalf("expected oversized audio buffer to be reset to cap <= %d, got %d", MaxPooledAudioBufferSize, cap(*bufPtr))
-	}
-	if len(*bufPtr) != DefaultAudioBufferSize {
-		t.Fatalf("expected reset audio buffer len %d, got %d", DefaultAudioBufferSize, len(*bufPtr))
-	}
-}
-
-func TestPutFrameBuffer_PointerToNilSlice(t *testing.T) {
-	var nilSlice []byte
-	bufPtr := &nilSlice
-	PutFrameBuffer(bufPtr)
-
-	if *bufPtr == nil || len(*bufPtr) != DefaultFrameBufferSize {
-		t.Fatalf("expected initialized buffer, got %v", *bufPtr)
-	}
-}
-
-func TestPutAudioBuffer_PointerToNilSlice(t *testing.T) {
-	var nilSlice []byte
-	bufPtr := &nilSlice
-	PutAudioBuffer(bufPtr)
-
-	if *bufPtr == nil || len(*bufPtr) != DefaultAudioBufferSize {
-		t.Fatalf("expected initialized audio buffer, got %v", *bufPtr)
-	}
-}
-
 func TestPutFrameBuffer_NormalizeResliced(t *testing.T) {
 	buf := make([]byte, DefaultFrameBufferSize)
 	resliced := buf[:1024]
@@ -122,25 +74,31 @@ func TestPutAudioBuffer_NormalizeResliced(t *testing.T) {
 	}
 }
 
-func TestPutFrameBuffer_ResetUndersized(t *testing.T) {
-	undersized := make([]byte, 128)
-	bufPtr := &undersized
-
-	PutFrameBuffer(bufPtr)
-
-	if len(*bufPtr) != DefaultFrameBufferSize || cap(*bufPtr) < DefaultFrameBufferSize {
-		t.Fatalf("expected undersized buffer reset to len=%d cap>=%d, got len=%d cap=%d", DefaultFrameBufferSize, DefaultFrameBufferSize, len(*bufPtr), cap(*bufPtr))
+// Buffers outside the pooled size range (oversized, undersized, nil) are
+// dropped, not swapped for a freshly allocated default buffer on every put.
+func TestPutBuffersDropOutOfRangeWithoutAllocating(t *testing.T) {
+	cases := []struct {
+		name string
+		put  func(*[]byte)
+		size int
+	}{
+		{"frame oversized", PutFrameBuffer, MaxPooledFrameBufferSize + 1024},
+		{"frame undersized", PutFrameBuffer, 128},
+		{"frame nil", PutFrameBuffer, -1},
+		{"audio oversized", PutAudioBuffer, MaxPooledAudioBufferSize + 1024},
+		{"audio undersized", PutAudioBuffer, 64},
+		{"audio nil", PutAudioBuffer, -1},
 	}
-}
-
-func TestPutAudioBuffer_ResetUndersized(t *testing.T) {
-	undersized := make([]byte, 64)
-	bufPtr := &undersized
-
-	PutAudioBuffer(bufPtr)
-
-	if len(*bufPtr) != DefaultAudioBufferSize || cap(*bufPtr) < DefaultAudioBufferSize {
-		t.Fatalf("expected undersized audio buffer reset to len=%d cap>=%d, got len=%d cap=%d", DefaultAudioBufferSize, DefaultAudioBufferSize, len(*bufPtr), cap(*bufPtr))
+	for _, tc := range cases {
+		var buf []byte
+		if tc.size >= 0 {
+			buf = make([]byte, tc.size)
+		}
+		ptr := &buf
+		allocs := testing.AllocsPerRun(10, func() { tc.put(ptr) })
+		if allocs != 0 {
+			t.Errorf("%s: put allocated %.0f times, want 0", tc.name, allocs)
+		}
 	}
 }
 

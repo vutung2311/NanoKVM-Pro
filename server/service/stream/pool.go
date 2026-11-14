@@ -41,12 +41,12 @@ func PutFrameBuffer(bufPtr *[]byte) {
 	if bufPtr == nil {
 		return
 	}
+	// Drop buffers outside the pooled size range instead of allocating a
+	// replacement on every put; the pool's New makes one when it is needed.
 	if *bufPtr == nil || cap(*bufPtr) > MaxPooledFrameBufferSize || cap(*bufPtr) < DefaultFrameBufferSize {
-		b := make([]byte, DefaultFrameBufferSize)
-		*bufPtr = b
-	} else {
-		*bufPtr = (*bufPtr)[:DefaultFrameBufferSize]
+		return
 	}
+	*bufPtr = (*bufPtr)[:DefaultFrameBufferSize]
 	FrameBufferPool.Put(bufPtr)
 }
 
@@ -56,11 +56,8 @@ func PutAudioBuffer(bufPtr *[]byte) {
 		return
 	}
 	if *bufPtr == nil || cap(*bufPtr) > MaxPooledAudioBufferSize || cap(*bufPtr) < DefaultAudioBufferSize {
-		b := make([]byte, DefaultAudioBufferSize)
-		*bufPtr = b
-	} else {
-		*bufPtr = (*bufPtr)[:DefaultAudioBufferSize]
+		return
 	}
+	*bufPtr = (*bufPtr)[:DefaultAudioBufferSize]
 	AudioBufferPool.Put(bufPtr)
 }
-
