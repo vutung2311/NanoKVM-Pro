@@ -18,6 +18,23 @@ version_lt() {
     return 1
 }
 
+# Up to 1.x the TLS key/cert and device_number were package files, shared by
+# every device. They are no longer shipped, so dpkg deletes them while
+# unpacking this version. Keep a copy; postinst puts back the ones that are
+# the device's own and drops the shared ones.
+PRESERVE_DIR=/var/lib/nanokvmpro/preserve
+case "$1" in
+    install|upgrade)
+        mkdir -p "$PRESERVE_DIR"
+        chmod 700 "$PRESERVE_DIR"
+        for f in /etc/kvm/server.key /etc/kvm/server.crt /etc/kvm/device_number /kvmapp/device_number; do
+            if [ -f "$f" ]; then
+                cp -p "$f" "$PRESERVE_DIR/${f//\//_}"
+            fi
+        done
+        ;;
+esac
+
 systemctl disable nginx 2>/dev/null || true
 
 if [ "$(stat -c %d:%i /)" == "$(stat -c %d:%i /proc/1/root/.)" ]; then
