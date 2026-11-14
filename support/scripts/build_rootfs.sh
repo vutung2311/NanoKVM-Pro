@@ -154,7 +154,9 @@ apt-get install -y --no-install-recommends \
     e2fsprogs fdisk wireguard-tools iptables curl wget nano vim-tiny networkd-dispatcher cron dnsmasq-base
 
 # Set default root credentials and hostname
-echo "root:root" | chpasswd
+# Root password must match what reset_to_default.sh restores (stock Sipeed default),
+# so a factory reset returns the device to the same credentials it shipped with.
+echo "root:sipeed" | chpasswd
 echo "kvm" > /etc/hostname
 grep -q "127.0.1.1" /etc/hosts 2>/dev/null || printf "127.0.1.1\tkvm\n" >> /etc/hosts
 
@@ -183,6 +185,12 @@ RuntimeDirectory=sshd
 RuntimeDirectoryMode=0755
 ExecStartPre=/bin/mkdir -p -m 0755 /run/sshd
 SSH_CONF_EOF
+
+# The web UI's "change password" sets the root password; Ubuntu's default
+# PermitRootLogin prohibit-password would make sshd reject it outright.
+# Keep in sync with kvmcomm/overlay/etc/ssh/sshd_config.d/10-nanokvm.conf.
+mkdir -p /etc/ssh/sshd_config.d
+printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' > /etc/ssh/sshd_config.d/10-nanokvm.conf
 
 locale-gen en_US.UTF-8
 update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8

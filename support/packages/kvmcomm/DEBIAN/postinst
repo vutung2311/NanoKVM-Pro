@@ -121,6 +121,11 @@ if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     if [ "$(stat -c %d:%i /)" == "$(stat -c %d:%i /proc/1/root/.)" ]; then
         systemctl stop wpa_supplicant.service 2>/dev/null || true
+        # Pick up /etc/ssh/sshd_config.d/10-nanokvm.conf (root password login) without
+        # dropping existing sessions; never reload into a config sshd rejects.
+        if [ -x /usr/sbin/sshd ] && /usr/sbin/sshd -t 2>/dev/null; then
+            systemctl try-reload-or-restart ssh.service 2>/dev/null || true
+        fi
         if [ ! -d /root/factory_test ]; then
             systemctl start kvmcomm.service
         fi
