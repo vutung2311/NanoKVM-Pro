@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"NanoKVM-Server/proto"
@@ -90,6 +91,9 @@ func (s *Service) SetHdmiPassthrough(c *gin.Context) {
 		return
 	}
 
+	passthroughMu.Lock()
+	defer passthroughMu.Unlock()
+
 	var err error
 	var configVal string
 	if req.Enabled {
@@ -128,17 +132,55 @@ func isHdmiEnabled(flag string) (bool, error) {
 	return enabled, nil
 }
 
+// saveHdmiPassthroughConfig replaces the config file atomically (temp file,
+// fsync, rename, fsync dir), so a power loss leaves the old or new value,
+// never an empty file that would read as "off" at the next boot.
 func saveHdmiPassthroughConfig(val string) error {
 	dir := filepath.Dir(HdmiPassthroughConfigFile)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
 	}
-	return os.WriteFile(HdmiPassthroughConfigFile, []byte(val+"\n"), 0644)
+	tmp, err := os.CreateTemp(dir, ".hdmi_passthrough-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }() // no-op after a successful rename
+
+	if _, err := tmp.WriteString(val + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, HdmiPassthroughConfigFile); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
+// passthroughMu serializes passthrough changes: each one is a multi-step
+// power sequence on the splitter, and two interleaved would leave it in a
+// mixed state.
+var passthroughMu sync.Mutex
+
 func InitHdmiPassthrough() {
+	passthroughMu.Lock()
+	defer passthroughMu.Unlock()
+
 	if _, err := os.Stat(LT6911LoopoutPower); os.IsNotExist(err) {
 		return
 	}
