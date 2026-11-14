@@ -37,7 +37,7 @@ gen_b2sum() {
     : > "$out_file"
 
     if [ -d "firmware" ] || [ -d "overlay" ]; then
-        find firmware overlay -type f 2>/dev/null | sort | xargs b2sum > "$out_file"
+        find firmware overlay -type f -print0 2>/dev/null | sort -z | xargs -0 -r b2sum > "$out_file"
     fi
 
     echo "b2sum have been saved to $out_file ($(wc -l < "$out_file") files)"
@@ -80,6 +80,82 @@ flash_image() {
     fi
 }
 
+# 32-bit SoC register access: soc_reg ADDR (read, prints hex) / soc_reg ADDR VALUE (write).
+# The Jammy rootfs ships no `devmem`, so fall back to busybox's applet, then to
+# python3 on /dev/mem (kernel has CONFIG_DEVMEM=y, STRICT_DEVMEM off).
+soc_reg() {
+    if command -v devmem >/dev/null 2>&1; then
+        devmem "$1" 32 ${2:+"$2"}
+    elif command -v busybox >/dev/null 2>&1 && busybox --list 2>/dev/null | grep -qx devmem; then
+        busybox devmem "$1" 32 ${2:+"$2"}
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -I - "$1" ${2:+"$2"} <<'PY'
+import mmap, os, sys
+addr = int(sys.argv[1], 0)
+page, off = addr & ~0xFFF, addr & 0xFFF
+write = len(sys.argv) > 2
+fd = os.open("/dev/mem", (os.O_RDWR if write else os.O_RDONLY) | os.O_SYNC)
+m = mmap.mmap(fd, 4096, mmap.MAP_SHARED,
+              mmap.PROT_READ | (mmap.PROT_WRITE if write else 0), offset=page)
+words = memoryview(m).cast("I")  # single aligned 32-bit loads/stores
+if write:
+    words[off // 4] = int(sys.argv[2], 0) & 0xFFFFFFFF
+else:
+    print("0x%08X" % words[off // 4])
+PY
+    else
+        return 127
+    fi
+}
+
+# fw_printenv/fw_setenv from /opt/swupdate need its bundled libubootenv, which
+# is not on the Jammy loader path.
+uboot_env() {
+    if [ -d /opt/swupdate/lib ]; then
+        LD_LIBRARY_PATH="/opt/swupdate/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$@"
+    else
+        "$@"
+    fi
+}
+
+# Mark the slot that actually booted as good (same as vendor S99checkboot start;
+# kvmcomm.sh does the same on every boot). BL1 (bl1/core/boot/boot.c
+# select_slot_ab) consumes the booted slot's BOOTABLE bit on every warm boot.
+# The slot comes from the hardware register, not from the U-Boot env, which can
+# be stale after a BL1 fallback. Never touch the other slot's bits.
+# TOP_CHIPMODE_GLB_BACKUP0: 0x2390024 readback, 0x2390028 set, 0x239002C clear.
+#   BIT2 SLOTA, BIT3 SLOTB, BIT4 SLOTA_BOOTABLE, BIT5 SLOTB_BOOTABLE, BIT7 BOOT_KERNEL_FAIL
+# ON-DEVICE CHECK: `soc_reg 0x2390024` showed 0x4 after booting slot A
+# (verified 2026-11-14). PENDING: confirm 0x8 (not 0x4) after booting slot B.
+mark_booted_slot_good() {
+    local raw reg slot token env_slot
+    raw=$(soc_reg 0x2390024 2>/dev/null) || raw=""
+    raw=$(printf '%s\n' "$raw" | grep -oiE '0x[0-9a-f]+' | tail -n1 || true)
+    if [ -z "$raw" ]; then
+        echo "Boot slot: cannot read 0x2390024; not arming"
+        return 0
+    fi
+    reg=$((raw))
+    case $((reg & 0xC)) in
+        4) slot=A; token=0x10 ;;
+        8) slot=B; token=0x20 ;;
+        *)
+            echo "Boot slot: 0x2390024=${raw} selects neither or both slots; not arming"
+            return 0
+            ;;
+    esac
+
+    echo "Marking boot slot ${slot} bootable (0x2390024 was ${raw})..."
+    soc_reg 0x239002C 0x80 2>/dev/null || true # clear BOOT_KERNEL_FAIL
+    soc_reg 0x2390028 "$token" 2>/dev/null || true # re-arm only the booted slot
+
+    env_slot=$(uboot_env fw_printenv bootsystem 2>/dev/null | sed -n 's/^bootsystem=//p' | tail -n1 || true)
+    if [ "$env_slot" != "$slot" ]; then
+        echo "Boot slot: bootsystem env '${env_slot}' disagrees with hardware; setting ${slot}"
+        uboot_env fw_setenv bootsystem "$slot" 2>/dev/null || true
+    fi
+}
+
 update() {
     echo "Checking b2sum ..."
     check_sum
@@ -98,24 +174,9 @@ update() {
         flash_image "$DTB_FILE"    /kvmcomm/scripts/axdtb.sh    /dev/mmcblk0p12 /dev/mmcblk0p13
         flash_image "$KERNEL_FILE" /kvmcomm/scripts/axkernel.sh /dev/mmcblk0p14 /dev/mmcblk0p15
 
-        # Arm active boot slot in AX630C persistent backup registers and U-Boot environment
-        local bootsystem
-        bootsystem=$(fw_printenv bootsystem 2>/dev/null | awk -F= '{print $2}')
-        [ -z "$bootsystem" ] && bootsystem="A"
-
-        echo "Arming boot slot ($bootsystem) in hardware registers..."
-        # Always clear BOOT_KERNEL_FAIL flag (0x80)
-        devmem 0x239002C 32 0x80 2>/dev/null || true
-
-        if [ "$bootsystem" = "B" ]; then
-            devmem 0x239002C 32 0x14 2>/dev/null || true
-            devmem 0x2390028 32 0x28 2>/dev/null || true
-            fw_setenv bootsystem B 2>/dev/null || true
-        else
-            devmem 0x239002C 32 0x28 2>/dev/null || true
-            devmem 0x2390028 32 0x14 2>/dev/null || true
-            fw_setenv bootsystem A 2>/dev/null || true
-        fi
+        # Both slots now hold the same image (see flash_image calls above), so
+        # do not switch slots here: only keep the slot that booted armed.
+        mark_booted_slot_good
     elif [ "$root_dev" = "/dev/mmcblk1p2" ]; then
         echo "Updating firmware for SD boot ..."
         cp "$UBOOT_FILE" /boot/uboot.bin
@@ -130,10 +191,24 @@ update() {
     if [ -d overlay/boot ]; then
         cp -r overlay/boot/* /boot 2>/dev/null || true
     fi
-    if [ -d overlay/kvmapp/server/web/assets ]; then
-        rm -rf /kvmapp/server/web/assets
+    # Never leave the web UI without assets: rsync replaces each file via a
+    # temp file + rename, so at every point the assets referenced by whichever
+    # index.html is on disk still exist. Order:
+    #   1. add the new hashed assets next to the old ones (no deletion),
+    #   2. install the rest of the overlay (including the new index.html),
+    #   3. once that is on disk, prune assets the new build no longer ships.
+    # A power cut at any step leaves at worst some stale assets, which the
+    # next update prunes.
+    local web_assets=kvmapp/server/web/assets
+    if [ -d "overlay/$web_assets" ]; then
+        mkdir -p "/$web_assets"
+        rsync -a "overlay/$web_assets/" "/$web_assets/"
     fi
-    rsync -a --exclude='/boot' overlay/ /
+    rsync -a --exclude='/boot' --exclude="/$web_assets" overlay/ /
+    if [ -d "overlay/$web_assets" ]; then
+        sync
+        rsync -a --delete-after "overlay/$web_assets/" "/$web_assets/"
+    fi
 
     touch /var/run/reboot-required
 
@@ -142,6 +217,22 @@ update() {
     sync
 
     echo "Firmware update completed"
+}
+
+# Download over verified TLS. Exit codes 58/59/60/77/83/90/91 are TLS or
+# certificate failures: retrying or trying another mirror will not help, and
+# there is deliberately no insecure fallback.
+cdn_download() {
+    local url="$1" out="$2" connect_timeout="$3" max_time="$4" rc=0
+    curl -fsSL --connect-timeout "$connect_timeout" --max-time "$max_time" "$url" -o "$out" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        58|59|60|77|83|90|91)
+            echo "Error: TLS certificate verification failed for $url (curl exit $rc)."
+            echo "Check the system clock and that CA certificates are installed (ca-certificates, /etc/ssl/certs)."
+            exit 1
+            ;;
+    esac
+    return "$rc"
 }
 
 fetch_from_cdn() {
@@ -163,7 +254,7 @@ fetch_from_cdn() {
         for json_url in "$base/$json_file"; do
             echo "Trying to download JSON: $json_url"
             for ((i=1; i<=max_retries; i++)); do
-                if curl -fsSL -k --connect-timeout 5 --max-time 30 "$json_url" -o "$WORKDIR/$json_file" >/dev/null 2>&1; then
+                if cdn_download "$json_url" "$WORKDIR/$json_file" 5 30; then
                     echo "Downloaded JSON: $WORKDIR/$json_file (attempt $i)"
                     json_downloaded=true
                     break 3
@@ -193,7 +284,7 @@ fetch_from_cdn() {
             url="${base}/${ext}"
             echo "Trying to download firmware package: $url"
             for ((i=1; i<=max_retries; i++)); do
-                if curl -fsSL -k --connect-timeout 15 --max-time 300 "$url" -o "$WORKDIR/$ext" >/dev/null 2>&1; then
+                if cdn_download "$url" "$WORKDIR/$ext" 15 300; then
                     pkg="$WORKDIR/$ext"
                     echo "Downloaded firmware package: $pkg (attempt $i)"
                     pkg_downloaded=true

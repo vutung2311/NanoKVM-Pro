@@ -223,17 +223,83 @@ check_firmware_update() {
 mkdir -p "$LOG_DIR"
 echo "$(date) - Starting kvmcomm service (PID:$$)" >>"$LOG_FILE"
 
-# Ensure active boot slot remains armed after successful boot
-bootsystem=$(fw_printenv bootsystem 2>/dev/null | awk -F = '{ print $2 }')
-if [ "$bootsystem" = "B" ]; then
-    devmem 0x239002C 32 0x80 2>/dev/null || true
-    devmem 0x239002C 32 0x14 2>/dev/null || true
-    devmem 0x2390028 32 0x28 2>/dev/null || true
-else
-    devmem 0x239002C 32 0x80 2>/dev/null || true
-    devmem 0x239002C 32 0x28 2>/dev/null || true
-    devmem 0x2390028 32 0x14 2>/dev/null || true
-fi
+# 32-bit SoC register access: soc_reg ADDR (read, prints hex) / soc_reg ADDR VALUE (write).
+# The Jammy rootfs ships no `devmem`, so fall back to busybox's applet, then to
+# python3 on /dev/mem (kernel has CONFIG_DEVMEM=y, STRICT_DEVMEM off).
+soc_reg() {
+    if command -v devmem >/dev/null 2>&1; then
+        devmem "$1" 32 ${2:+"$2"}
+    elif command -v busybox >/dev/null 2>&1 && busybox --list 2>/dev/null | grep -qx devmem; then
+        busybox devmem "$1" 32 ${2:+"$2"}
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -I - "$1" ${2:+"$2"} <<'PY'
+import mmap, os, sys
+addr = int(sys.argv[1], 0)
+page, off = addr & ~0xFFF, addr & 0xFFF
+write = len(sys.argv) > 2
+fd = os.open("/dev/mem", (os.O_RDWR if write else os.O_RDONLY) | os.O_SYNC)
+m = mmap.mmap(fd, 4096, mmap.MAP_SHARED,
+              mmap.PROT_READ | (mmap.PROT_WRITE if write else 0), offset=page)
+words = memoryview(m).cast("I")  # single aligned 32-bit loads/stores
+if write:
+    words[off // 4] = int(sys.argv[2], 0) & 0xFFFFFFFF
+else:
+    print("0x%08X" % words[off // 4])
+PY
+    else
+        return 127
+    fi
+}
+
+# fw_printenv/fw_setenv from /opt/swupdate need its bundled libubootenv, which
+# is not on the Jammy loader path.
+uboot_env() {
+    if [ -d /opt/swupdate/lib ]; then
+        LD_LIBRARY_PATH="/opt/swupdate/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$@"
+    else
+        "$@"
+    fi
+}
+
+# Mark the slot that actually booted as good (same as vendor S99checkboot start).
+# BL1 (bl1/core/boot/boot.c select_slot_ab) consumes the booted slot's BOOTABLE
+# bit on every warm boot; without re-arming it, the next warm reset falls back
+# to the other slot. The slot comes from the hardware register, not from the
+# U-Boot env, which can be stale after a BL1 fallback. Never touch the other
+# slot's bits.
+# TOP_CHIPMODE_GLB_BACKUP0: 0x2390024 readback, 0x2390028 set, 0x239002C clear.
+#   BIT2 SLOTA, BIT3 SLOTB, BIT4 SLOTA_BOOTABLE, BIT5 SLOTB_BOOTABLE, BIT7 BOOT_KERNEL_FAIL
+# ON-DEVICE CHECK: `soc_reg 0x2390024` showed 0x4 after booting slot A
+# (verified 2026-11-14). PENDING: confirm 0x8 (not 0x4) after booting slot B.
+mark_booted_slot_good() {
+    local raw reg slot token env_slot
+    raw=$(soc_reg 0x2390024 2>/dev/null) || raw=""
+    raw=$(printf '%s\n' "$raw" | grep -oiE '0x[0-9a-f]+' | tail -n1 || true)
+    if [ -z "$raw" ]; then
+        echo "$(date) - Boot slot: cannot read 0x2390024; not arming" >>"$LOG_FILE"
+        return 0
+    fi
+    reg=$((raw))
+    case $((reg & 0xC)) in
+        4) slot=A; token=0x10 ;;
+        8) slot=B; token=0x20 ;;
+        *)
+            echo "$(date) - Boot slot: 0x2390024=${raw} selects neither or both slots; not arming" >>"$LOG_FILE"
+            return 0
+            ;;
+    esac
+
+    soc_reg 0x239002C 0x80 2>/dev/null || true # clear BOOT_KERNEL_FAIL
+    soc_reg 0x2390028 "$token" 2>/dev/null || true # re-arm only the booted slot
+    echo "$(date) - Boot slot ${slot} marked bootable (0x2390024 was ${raw})" >>"$LOG_FILE"
+
+    env_slot=$(uboot_env fw_printenv bootsystem 2>/dev/null | sed -n 's/^bootsystem=//p' | tail -n1 || true)
+    if [ "$env_slot" != "$slot" ]; then
+        echo "$(date) - Boot slot: bootsystem env '${env_slot}' disagrees with hardware; setting ${slot}" >>"$LOG_FILE"
+        uboot_env fw_setenv bootsystem "$slot" 2>/dev/null || true
+    fi
+}
+mark_booted_slot_good
 
 # ensure /bin/sh points to bash
 shell_target=$(readlink /bin/sh)
