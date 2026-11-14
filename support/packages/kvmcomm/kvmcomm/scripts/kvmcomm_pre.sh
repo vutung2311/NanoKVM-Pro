@@ -7,8 +7,16 @@ readonly APP_ROOT="/kvmcomm"
 
 # Kernel version specific module selection
 KVER=$(uname -r | cut -d"-" -f1)
+. "${APP_ROOT}/scripts/ko_override.sh" 2>/dev/null || ko_override_ok() { [ -f "$1" ]; }
 if [ -d "${APP_ROOT}/ko_${KVER}" ]; then
-    cp -af "${APP_ROOT}/ko_${KVER}"/* "${APP_ROOT}/ko/" 2>/dev/null || true
+    # Copy each override over ko/, except one older than the shipped module.
+    for ko in "${APP_ROOT}/ko_${KVER}"/*; do
+        [ -f "$ko" ] || continue
+        case "$ko" in
+            *.ko) ko_override_ok "$ko" "${APP_ROOT}/ko/${ko##*/}" || continue ;;
+        esac
+        cp -af "$ko" "${APP_ROOT}/ko/" 2>/dev/null || true
+    done
     if [ -f "${APP_ROOT}/ko_${KVER}/aic8800_fdrv.ko" ]; then
         mkdir -p "/lib/modules/$(uname -r)/kernel/drivers/net/wireless/aic8800" 2>/dev/null || true
         cp -af "${APP_ROOT}/ko_${KVER}"/aic8800* "/lib/modules/$(uname -r)/kernel/drivers/net/wireless/aic8800/" 2>/dev/null || true

@@ -109,6 +109,23 @@ start_kvm_vin() {
     fi
 }
 
+. "${SCRIPTS_ROOT}/ko_override.sh" 2>/dev/null || ko_override_ok() { [ -f "$1" ]; }
+
+# Path to load for a module shipped at $1: its /kvmcomm/ko_<kver>/ override
+# unless that one is older (see ko_override.sh).
+pick_ko() {
+    local shipped="$1" override
+    override="/kvmcomm/ko_$(uname -r)/$(basename "$shipped")"
+    if ko_override_ok "$override" "$shipped"; then
+        echo "$override"
+        return
+    fi
+    if [ -f "$override" ]; then
+        echo "$(date) - Ignoring $override: older than $shipped" >>"$LOG_FILE"
+    fi
+    echo "$shipped"
+}
+
 unload_ko() {
     local ko_input="$1"
     local ko_name
@@ -137,13 +154,8 @@ unload_ko() {
 
 load_ko() {
     local ko_input="$1"
-    local ko_path="$ko_input"
-    local kver
-    kver=$(uname -r)
-    local specific_path="/kvmcomm/ko_${kver}/$(basename "$ko_input")"
-    if [ -f "$specific_path" ]; then
-        ko_path="$specific_path"
-    fi
+    local ko_path
+    ko_path=$(pick_ko "$ko_input")
 
     if [ ! -f "$ko_path" ]; then
         echo "$(date) - Error: Kernel module file '$ko_path' not found." >>"$LOG_FILE"
@@ -389,10 +401,7 @@ read_numeric_param "/boot/force_fps" force_fps
 
 [ -z "$INS_MOD_PARAMS" ] && [ -n "$force_fps" ] && INS_MOD_PARAMS="force_fps=$force_fps"
 
-LT6911_KO="/kvmcomm/ko/lt6911_manage.ko"
-if [ -f "/kvmcomm/ko_$(uname -r)/lt6911_manage.ko" ]; then
-    LT6911_KO="/kvmcomm/ko_$(uname -r)/lt6911_manage.ko"
-fi
+LT6911_KO=$(pick_ko /kvmcomm/ko/lt6911_manage.ko)
 
 # Start the driver with loop-out already off when passthrough is disabled, so the
 # splitter's second output is never briefly on. Only a driver that knows the
