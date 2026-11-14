@@ -107,6 +107,11 @@ mkdir -p "${TMP_DIR}" || {
     exit 1
 }
 
+# Everything created from here on holds or may hold Wi-Fi secrets:
+# wpa_supplicant.conf (save_config rewrites it with wpa_supplicant's umask,
+# inherited from here), hostapd.conf, ap.pass, wifi.conf. Only root reads them.
+umask 077
+
 acquire_lock() {
     exec 200>"$LOCK_FILE"
     if ! flock -n 200; then
@@ -178,6 +183,62 @@ EOF
             debug_print "[wifi] added sae_pwe=2 to $WPA_CONF_FILE"
         fi
     fi
+    # Files from older releases are 0644 and hold plaintext passphrases.
+    chmod 600 "$WPA_CONF_FILE" 2>/dev/null || true
+    if [[ -f "$WIFI_CFG_PATH" ]] && grep -q '^WIFI_CFG_PASSWD=' "$WIFI_CFG_PATH" 2>/dev/null; then
+        chmod 600 "$WIFI_CFG_PATH" 2>/dev/null || true
+    fi
+}
+
+# PIDs of wpa_supplicant processes, optionally only those started with
+# "-i IFACE". Matches the process name exactly (pgrep -x): "pgrep -f
+# wpa_supplicant" also matched editors, greps and anything else with the word
+# in its command line.
+wpa_supplicant_pids() {
+    local iface="${1:-}" pid args
+    for pid in $(pgrep -x wpa_supplicant 2>/dev/null); do
+        if [[ -n "$iface" ]]; then
+            args=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || continue
+            [[ " $args" =~ \ -i\ ?${iface}( |$) ]] || continue
+        fi
+        echo "$pid"
+    done
+}
+
+# SIGTERM first so wpa_supplicant deauthenticates from the AP and removes its
+# control socket; SIGKILL only what is still alive after ~2 s.
+kill_wpa_supplicant() {
+    local pids i
+    pids=$(wpa_supplicant_pids "${1:-}")
+    [[ -n "$pids" ]] || return 0
+    # shellcheck disable=SC2086
+    kill -TERM $pids 2>/dev/null || true
+    for ((i = 0; i < 20; i++)); do
+        pids=$(for pid in $pids; do kill -0 "$pid" 2>/dev/null && echo "$pid"; done)
+        [[ -n "$pids" ]] || return 0
+        sleep 0.1
+    done
+    debug_print "[wifi] wpa_supplicant ignored SIGTERM, killing: $pids"
+    # shellcheck disable=SC2086
+    kill -KILL $pids 2>/dev/null || true
+}
+
+# Append an iptables rule only if it is not there yet, so restarting the AP
+# (for example for a new SSID, which skips stop_wifi_ap) never stacks copies.
+# Usage: ipt_add TABLE CHAIN RULE...
+ipt_add() {
+    local table="$1" chain="$2"
+    shift 2
+    iptables -t "$table" -C "$chain" "$@" 2>/dev/null || iptables -t "$table" -A "$chain" "$@"
+}
+
+# Delete every copy of a rule (older releases could add duplicates).
+ipt_del_all() {
+    local table="$1" chain="$2" i
+    shift 2
+    for ((i = 0; i < 16; i++)); do
+        iptables -t "$table" -D "$chain" "$@" 2>/dev/null || break
+    done
 }
 
 start_service() {
@@ -186,9 +247,9 @@ start_service() {
 
     ensure_wpa_conf
 
-    if ! pgrep -f "wpa_supplicant.*${WIFI_IFACE}" >/dev/null; then
+    if [[ -z "$(wpa_supplicant_pids "$WIFI_IFACE")" ]]; then
         # Ensure any unmanaged or stale wpa_supplicant instances are terminated to prevent EAPOL packet race conditions
-        pkill -9 -f "wpa_supplicant" 2>/dev/null || true
+        kill_wpa_supplicant
         debug_print "[wifi] starting wpa_supplicant..."
         mkdir -p /run/wpa_supplicant
         wpa_supplicant -D "${DRIVER}" -i "$WIFI_IFACE" -c "$WPA_CONF_FILE" -B -P "$WPA_PID_FILE" >/dev/null 2>&1 200>&-
@@ -230,7 +291,7 @@ start_wifi_ap() {
     local WIFI_SSID="$1"
     local WIFI_PSW="$2"
 
-    if pgrep hostapd >/dev/null; then
+    if pgrep -x hostapd >/dev/null; then
         local current_ssid
         current_ssid=$(awk -F= '/^ssid=/{print $2}' "$HOSTAPD_CONF" 2>/dev/null)
         if [[ "$current_ssid" == "$WIFI_SSID" ]]; then
@@ -245,18 +306,14 @@ start_wifi_ap() {
     stop_service
 
     local retry=0
-    while pgrep -f "wpa_supplicant.*${WIFI_IFACE}" >/dev/null && [ $retry -lt 10 ]; do
+    while [[ -n "$(wpa_supplicant_pids "$WIFI_IFACE")" ]] && [ $retry -lt 10 ]; do
         sleep 0.5
         ((retry++))
     done
+    kill_wpa_supplicant "$WIFI_IFACE"
 
-    if pgrep -f "wpa_supplicant.*${WIFI_IFACE}" >/dev/null; then
-        pkill -9 -f "wpa_supplicant.*${WIFI_IFACE}" || true
-        sleep 0.5
-    fi
-
-    pkill hostapd || true
-    pkill udhcpd || true
+    pkill -x hostapd || true
+    pkill -x udhcpd || true
 
     debug_print "[wifi] configuring interface: ${WIFI_IFACE}"
     ip addr flush dev "$WIFI_IFACE"
@@ -304,9 +361,9 @@ EOF
 
     debug_print "[wifi] configuring network routing"
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
-    iptables -t nat -A POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
-    iptables -A FORWARD -i "$WIFI_IFACE" -o "$ETH_IFACE" -j ACCEPT
-    iptables -A FORWARD -i "$ETH_IFACE" -o "$WIFI_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    ipt_add nat POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
+    ipt_add filter FORWARD -i "$WIFI_IFACE" -o "$ETH_IFACE" -j ACCEPT
+    ipt_add filter FORWARD -i "$ETH_IFACE" -o "$WIFI_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 
     printf "%s" "$WIFI_PSW" > /tmp/ap.pass
     touch /tmp/wifi_config
@@ -318,14 +375,14 @@ stop_wifi_ap() {
     local WIFI_IFACE=$(get_wireless_interface)
 
     debug_print "[wifi] terminating ap services"
-    pkill hostapd || true
-    pkill udhcpd || true
+    pkill -x hostapd || true
+    pkill -x udhcpd || true
     rm -f /tmp/ap.pass /tmp/wifi_config || true
 
     debug_print "[wifi] cleaning network configuration"
-    iptables -t nat -D POSTROUTING -o "$ETH_IFACE" -j MASQUERADE 2>/dev/null || true
-    iptables -D FORWARD -i "$WIFI_IFACE" -o "$ETH_IFACE" -j ACCEPT 2>/dev/null || true
-    iptables -D FORWARD -i "$ETH_IFACE" -o "$WIFI_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+    ipt_del_all nat POSTROUTING -o "$ETH_IFACE" -j MASQUERADE
+    ipt_del_all filter FORWARD -i "$WIFI_IFACE" -o "$ETH_IFACE" -j ACCEPT
+    ipt_del_all filter FORWARD -i "$ETH_IFACE" -o "$WIFI_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 
     sysctl -w net.ipv4.ip_forward=0 >/dev/null
 
@@ -648,6 +705,19 @@ validate_ssid() {
     fi
     if [[ "$s" == *[[:cntrl:]]* ]]; then
         echo "[wifi] invalid SSID: contains control characters" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Access point passphrase for hostapd's wpa_passphrase=: 8-63 printable ASCII
+# characters (hostapd's own rule). A newline would start a new hostapd.conf
+# line, so this also keeps the config from being injected into.
+validate_ap_psk() {
+    local p="$1"
+    local LC_ALL=C
+    if [[ ${#p} -lt 8 || ${#p} -gt 63 || ! "$p" =~ ^[[:print:]]+$ ]]; then
+        echo "[wifi] invalid AP password: must be 8-63 printable ASCII characters" >&2
         return 1
     fi
     return 0
@@ -1602,6 +1672,10 @@ case "$1" in
     ;;
 "ap_start")
     validate_arguments 2 $#
+    # Both values are written into hostapd.conf; reject anything that could
+    # add lines to it before the current link is torn down.
+    validate_ssid "$2" || exit 2
+    validate_ap_psk "$3" || exit 2
     start_wifi_ap "$2" "$3"
     ;;
 "ap_stop")
