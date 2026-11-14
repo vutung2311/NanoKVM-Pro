@@ -94,3 +94,58 @@ export function registerMouseButtonHandler(handler: ButtonActionHandler): () => 
 export function triggerMouseButtonAction(type: 'mousedown' | 'mouseup', button: number): void {
   buttonActionHandler?.(type, button);
 }
+
+type ButtonsReleasedListener = () => void;
+const buttonsReleasedListeners = new Set<ButtonsReleasedListener>();
+
+/**
+ * Fired when the active mouse mode force-releases every button (blur, hidden tab,
+ * websocket close, failed send, mode switch). UI that shows a held/locked button
+ * (drag lock, on-screen L/M/R) must drop that state so it matches the host.
+ */
+export function onMouseButtonsReleased(listener: ButtonsReleasedListener): () => void {
+  buttonsReleasedListeners.add(listener);
+  return () => {
+    buttonsReleasedListeners.delete(listener);
+  };
+}
+
+export function notifyMouseButtonsReleased(): void {
+  for (const listener of buttonsReleasedListeners) {
+    listener();
+  }
+}
+
+// Browsers synthesize mousedown/mousemove/mouseup after a tap on any element whose
+// touch events were not cancelled (menu buttons, drag-lock toggle). Those must not
+// reach the host as real mouse input.
+const TOUCH_EMULATION_WINDOW_MS = 1000;
+let lastTouchTimestamp = -Infinity;
+let touchTrackerRefs = 0;
+
+function recordTouch() {
+  lastTouchTimestamp = performance.now();
+}
+
+export function trackTouchActivity(): () => void {
+  if (touchTrackerRefs++ === 0) {
+    const opts = { capture: true, passive: true } as const;
+    window.addEventListener('touchstart', recordTouch, opts);
+    window.addEventListener('touchend', recordTouch, opts);
+    window.addEventListener('touchcancel', recordTouch, opts);
+  }
+  return () => {
+    if (--touchTrackerRefs === 0) {
+      window.removeEventListener('touchstart', recordTouch, true);
+      window.removeEventListener('touchend', recordTouch, true);
+      window.removeEventListener('touchcancel', recordTouch, true);
+    }
+  };
+}
+
+export function isTouchEmulatedMouseEvent(e: MouseEvent): boolean {
+  const caps = (e as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } })
+    .sourceCapabilities;
+  if (caps && caps.firesTouchEvents) return true;
+  return performance.now() - lastTouchTimestamp < TOUCH_EMULATION_WINDOW_MS;
+}

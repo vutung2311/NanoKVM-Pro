@@ -26,6 +26,46 @@ function getMouseButtonBit(button: number): number {
 }
 
 /**
+ * Input sources that can hold mouse buttons independently. The HID report carries the
+ * union of every source, so one source releasing a button never drops another's hold
+ * (e.g. a trackpad tap must not end a drag held by the on-screen Left button).
+ */
+export type MouseButtonSource = 'pointer' | 'touch' | 'controls';
+
+class ButtonState {
+  private bySource = new Map<MouseButtonSource, number>();
+
+  get value(): number {
+    let combined = 0;
+    for (const bits of this.bySource.values()) combined |= bits;
+    return combined;
+  }
+
+  has(source: MouseButtonSource): boolean {
+    return (this.bySource.get(source) ?? 0) !== 0;
+  }
+
+  down(button: number, source: MouseButtonSource): void {
+    this.bySource.set(source, (this.bySource.get(source) ?? 0) | getMouseButtonBit(button));
+  }
+
+  up(button: number, source: MouseButtonSource): void {
+    this.bySource.set(source, (this.bySource.get(source) ?? 0) & ~getMouseButtonBit(button));
+  }
+
+  /** Clears one source's buttons; returns true when the combined state changed. */
+  releaseSource(source: MouseButtonSource): boolean {
+    const before = this.value;
+    this.bySource.delete(source);
+    return this.value !== before;
+  }
+
+  reset(): void {
+    this.bySource.clear();
+  }
+}
+
+/**
  * Relative Mouse Report (4 bytes)
  * Used with /dev/hidg1 (relative mouse)
  *
@@ -35,18 +75,31 @@ function getMouseButtonBit(button: number): number {
  * Byte 3: Wheel (-127 to 127)
  */
 export class MouseReportRelative {
-  private buttons: number = 0;
+  private state = new ButtonState();
+
+  private get buttons(): number {
+    return this.state.value;
+  }
 
   get hasPressedButtons(): boolean {
     return this.buttons !== 0;
   }
 
-  buttonDown(button: number): void {
-    this.buttons |= getMouseButtonBit(button);
+  hasPressedButtonsFrom(source: MouseButtonSource): boolean {
+    return this.state.has(source);
   }
 
-  buttonUp(button: number): void {
-    this.buttons &= ~getMouseButtonBit(button);
+  buttonDown(button: number, source: MouseButtonSource = 'pointer'): void {
+    this.state.down(button, source);
+  }
+
+  buttonUp(button: number, source: MouseButtonSource = 'pointer'): void {
+    this.state.up(button, source);
+  }
+
+  /** Releases only this source's buttons; returns true when the report would change. */
+  releaseSource(source: MouseButtonSource): boolean {
+    return this.state.releaseSource(source);
   }
 
   /**
@@ -83,7 +136,7 @@ export class MouseReportRelative {
   }
 
   reset(): Uint8Array {
-    this.buttons = 0;
+    this.state.reset();
     return this.buildReport(0, 0, 0, 0);
   }
 
@@ -103,18 +156,31 @@ export class MouseReportRelative {
  * Byte 6: Horizontal Wheel (-127 to 127, omitted when 0)
  */
 export class MouseReportAbsolute {
-  private buttons: number = 0;
+  private state = new ButtonState();
+
+  private get buttons(): number {
+    return this.state.value;
+  }
 
   get hasPressedButtons(): boolean {
     return this.buttons !== 0;
   }
 
-  buttonDown(button: number): void {
-    this.buttons |= getMouseButtonBit(button);
+  hasPressedButtonsFrom(source: MouseButtonSource): boolean {
+    return this.state.has(source);
   }
 
-  buttonUp(button: number): void {
-    this.buttons &= ~getMouseButtonBit(button);
+  buttonDown(button: number, source: MouseButtonSource = 'pointer'): void {
+    this.state.down(button, source);
+  }
+
+  buttonUp(button: number, source: MouseButtonSource = 'pointer'): void {
+    this.state.up(button, source);
+  }
+
+  /** Releases only this source's buttons; returns true when the report would change. */
+  releaseSource(source: MouseButtonSource): boolean {
+    return this.state.releaseSource(source);
   }
 
   /**
@@ -163,7 +229,7 @@ export class MouseReportAbsolute {
   }
 
   reset(lastX: number = 0, lastY: number = 0): Uint8Array {
-    this.buttons = 0;
+    this.state.reset();
     return this.buildReport(lastX, lastY, 0, 0);
   }
 

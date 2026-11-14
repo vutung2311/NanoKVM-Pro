@@ -1,3 +1,5 @@
+import type { MouseButtonSource } from '@/lib/mouse.ts';
+
 interface MouseMoveAbsoluteEvent {
   type: 'move';
   x: number;
@@ -13,6 +15,7 @@ interface MouseMoveRelativeEvent {
 interface MouseButtonEvent {
   type: 'mousedown' | 'mouseup';
   button: number;
+  source?: MouseButtonSource;
 }
 
 interface MouseWheelEvent {

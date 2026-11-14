@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 
-import { MouseReportAbsolute } from '@/lib/mouse.ts';
+import { MouseButtonSource, MouseReportAbsolute } from '@/lib/mouse.ts';
 import {
   getRenderedMediaBox,
   getScreenElement,
@@ -18,17 +18,19 @@ import {
 import { videoModeAtom, videoParametersAtom, viewportZoomAtom } from '@/jotai/screen.ts';
 
 import {
+  isTouchEmulatedMouseEvent,
+  notifyMouseButtonsReleased,
   registerMouseButtonHandler,
   registerMouseReleaseHandler,
   sendMouseRelease,
-  sendMouseReport
+  sendMouseReport,
+  trackTouchActivity
 } from './lifecycle.ts';
 import { createTouchGestureController } from './touch-gestures.ts';
 import { MouseAbsoluteEvent } from './types.ts';
 
 interface ReleaseMouseOptions {
   force?: boolean;
-  cancelTouchSequence?: boolean;
 }
 
 export const Absolute = () => {
@@ -135,7 +137,11 @@ export const Absolute = () => {
     }
 
     function handleWindowMouseMove(e: MouseEvent) {
-      if (mouseRef.current.hasPressedButtons) {
+      // Only a real mouse drag that started on the screen follows the pointer outside it.
+      // Touch-held buttons (gestures, on-screen L/M/R, drag lock) must ignore the
+      // browser's emulated mouse events from taps elsewhere on the page.
+      if (isTouchEmulatedMouseEvent(e)) return;
+      if (mouseRef.current.hasPressedButtonsFrom('pointer')) {
         handleMouseMove(e);
       }
     }
@@ -168,7 +174,8 @@ export const Absolute = () => {
     }
 
     function handleWindowMouseUp(e: MouseEvent) {
-      if (mouseRef.current.hasPressedButtons) {
+      if (isTouchEmulatedMouseEvent(e)) return;
+      if (mouseRef.current.hasPressedButtonsFrom('pointer')) {
         flushMouseMove();
         const coord = getCoordinate(e);
         lastPosRef.current = coord;
@@ -220,7 +227,7 @@ export const Absolute = () => {
       },
       onButton: (type, button) => {
         flushMouseMove();
-        return handleMouseEvent({ type, button });
+        return handleMouseEvent({ type, button, source: 'touch' });
       },
       onWheel: (deltaY, deltaX, clientX, clientY) => {
         flushMouseMove();
@@ -232,7 +239,8 @@ export const Absolute = () => {
         handleMouseEvent({ type: 'wheel', deltaY, deltaX });
       },
       onResetButtons: () => {
-        releaseMouse({ cancelTouchSequence: false });
+        // A touch sequence only owns its own buttons; holds from the on-screen controls survive.
+        releaseButtonSource('touch');
       },
       onZoomScrollStateChange: (active) => {
         setIsZoomScrollMode(active);
@@ -241,16 +249,27 @@ export const Absolute = () => {
 
     function releaseMouse(options: ReleaseMouseOptions = {}) {
       flushMouseMove();
-      const { force = false, cancelTouchSequence = true } = options;
+      const { force = false } = options;
       const mouse = mouseRef.current;
       const hadPressedButtons = mouse.hasPressedButtons;
       const report = mouse.reset(lastPosRef.current.x, lastPosRef.current.y);
 
-      touchController.cancel(cancelTouchSequence);
+      touchController.cancel(true);
       lastScrollTimeRef.current = 0;
 
       if (hadPressedButtons || force) {
         sendMouseRelease('absolute', report);
+      }
+      notifyMouseButtonsReleased();
+    }
+
+    function releaseButtonSource(source: MouseButtonSource) {
+      flushMouseMove();
+      const mouse = mouseRef.current;
+      if (!mouse.releaseSource(source)) return;
+      const report = mouse.buildButtonReport(lastPosRef.current.x, lastPosRef.current.y);
+      if (!sendMouseReport('absolute', report)) {
+        releaseMouse({ force: true });
       }
     }
 
@@ -260,11 +279,11 @@ export const Absolute = () => {
 
       switch (event.type) {
         case 'mousedown':
-          mouse.buttonDown(event.button);
+          mouse.buttonDown(event.button, event.source);
           report = mouse.buildButtonReport(lastPosRef.current.x, lastPosRef.current.y);
           break;
         case 'mouseup':
-          mouse.buttonUp(event.button);
+          mouse.buttonUp(event.button, event.source);
           report = mouse.buildButtonReport(lastPosRef.current.x, lastPosRef.current.y);
           break;
         case 'wheel':
@@ -323,8 +342,9 @@ export const Absolute = () => {
     const unregisterMouseReleaseHandler = registerMouseReleaseHandler(() => releaseMouse());
     const unregisterButtonHandler = registerMouseButtonHandler((type, button) => {
       flushMouseMove();
-      handleMouseEvent({ type, button });
+      handleMouseEvent({ type, button, source: 'controls' });
     });
+    const stopTrackingTouch = trackTouchActivity();
 
     return () => {
       if (moveRafId !== null) {
@@ -339,6 +359,7 @@ export const Absolute = () => {
       detachTouch();
       unregisterMouseReleaseHandler();
       unregisterButtonHandler();
+      stopTrackingTouch();
 
       screen.removeEventListener('mousemove', handleMouseMove);
       screen.removeEventListener('mousedown', handleMouseDown);

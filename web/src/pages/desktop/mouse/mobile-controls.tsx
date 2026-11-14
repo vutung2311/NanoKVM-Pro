@@ -17,7 +17,7 @@ import {
 import { videoModeAtom, videoParametersAtom, viewportZoomAtom } from '@/jotai/screen.ts';
 import { useTouchDevice } from '@/hooks/useTouchDevice.ts';
 
-import { triggerMouseButtonAction } from './lifecycle.ts';
+import { onMouseButtonsReleased, triggerMouseButtonAction } from './lifecycle.ts';
 
 export const MobileMouseControls = () => {
   const { t } = useTranslation();
@@ -53,6 +53,16 @@ export const MobileMouseControls = () => {
       }
     }
   }, [isButtonBarVisible]);
+
+  // The mouse layer force-released every button (blur, hidden tab, disconnect, failed send,
+  // mode switch): the host no longer holds anything, so drop held/locked UI state to match.
+  useEffect(() => {
+    return onMouseButtonsReleased(() => {
+      pressedButtonsRef.current.clear();
+      dragLockedRef.current = false;
+      setDragLocked(false);
+    });
+  }, []);
 
   useEffect(() => {
     const pressedSet = pressedButtonsRef.current;

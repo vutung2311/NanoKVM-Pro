@@ -77,6 +77,10 @@ export function createTouchGestureController(options: TouchGestureOptions) {
   let maxPinchDelta = 0;
   let maxMidDelta = 0;
   let multiMode: 'undecided' | 'pinch' | 'scroll' = 'undecided';
+  // Identifiers of the two surface touches the current baselines were measured from.
+  let pairIds: [number, number] | null = null;
+  // A two-finger tap (right click) only counts if two fingers went down once and nothing else happened.
+  let twoFingerTapEligible = false;
   let pinchScaleUnlocked = false;
   let scrollLockedByHold = false;
   let zoomScrollBadgeActive = false;
@@ -197,6 +201,8 @@ export function createTouchGestureController(options: TouchGestureOptions) {
     isMultiTouch = false;
     maxTouchCount = 0;
     multiMode = 'undecided';
+    pairIds = null;
+    twoFingerTapEligible = false;
     pinchScaleUnlocked = false;
     scrollLockedByHold = false;
     momentumStartedThisGesture = false;
@@ -213,6 +219,69 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       midX: (t0.clientX + t1.clientX) / 2,
       midY: (t0.clientY + t1.clientY) / 2
     };
+  }
+
+  /**
+   * (Re)measure every two-finger baseline from the given pair. Called whenever the surface
+   * touch count becomes 2 (first contact, 1→2 after lifting a finger, 3→2) so a stale
+   * distance/midpoint never turns into a zoom jump or a burst of wheel ticks.
+   */
+  function seedTwoFinger(t0: Touch, t1: Touch, firstEntry: boolean) {
+    const now = Date.now();
+    stopScrollMomentum();
+    clearTwoFingerHoldTimer();
+    setZoomScrollActive(false);
+
+    pairIds = [t0.identifier, t1.identifier];
+    const m = getTwoFingerMetrics(t0, t1);
+    startPinchDist = m.dist;
+    prevPinchDist = m.dist;
+    startMidX = m.midX;
+    startMidY = m.midY;
+    prevMidX = m.midX;
+    prevMidY = m.midY;
+    scrollAnchorX = m.midX;
+    scrollAnchorY = m.midY;
+    multiMode = 'undecided';
+    pinchScaleUnlocked = false;
+    scrollLockedByHold = false;
+    momentumStartedThisGesture = false;
+    prevMultiMoveTime = now;
+    lastMultiMoveTime = 0;
+    scrollVelX = 0;
+    scrollVelY = 0;
+    scrollAccX = 0;
+    scrollAccY = 0;
+
+    if (firstEntry) {
+      twoFingerStartTime = now;
+      maxPinchDelta = 0;
+      maxMidDelta = 0;
+      twoFingerTapEligible = true;
+    } else {
+      twoFingerTapEligible = false;
+    }
+
+    if (options.getZoom().scale > 1.02) {
+      twoFingerHoldTimer = setTimeout(() => {
+        twoFingerHoldTimer = null;
+        if (!isMultiTouch || activeTouchCount !== 2 || multiMode !== 'undecided') {
+          return;
+        }
+        multiMode = 'scroll';
+        scrollLockedByHold = true;
+        prevMultiMoveTime = Date.now();
+        lastMultiMoveTime = 0;
+        scrollVelX = 0;
+        scrollVelY = 0;
+        scrollAccX = 0;
+        scrollAccY = 0;
+        if (navigator.vibrate) {
+          navigator.vibrate(25);
+        }
+        setZoomScrollActive(true);
+      }, TWO_FINGER_SCROLL_HOLD_MS);
+    }
   }
 
   function emitAccumulatedScroll(
@@ -275,13 +344,36 @@ export function createTouchGestureController(options: TouchGestureOptions) {
   }
 
   function attach(surface: HTMLElement): () => void {
+    // Only fingers that started on the gesture surface count. TouchEvent.touches also holds
+    // fingers resting elsewhere (e.g. holding the on-screen L/M/R button), which must not
+    // turn a one-finger drag into a pinch/scroll.
+    function surfaceTouches(list: TouchList): Touch[] {
+      const result: Touch[] = [];
+      for (let i = 0; i < list.length; i++) {
+        const t = list[i];
+        if (t.target instanceof Node && surface.contains(t.target)) {
+          result.push(t);
+        }
+      }
+      return result;
+    }
+
+    function findPair(touches: Touch[]): [Touch, Touch] | null {
+      if (!pairIds || touches.length !== 2) return null;
+      const [idA, idB] = pairIds;
+      const a = touches.find((t) => t.identifier === idA);
+      const b = touches.find((t) => t.identifier === idB);
+      return a && b ? [a, b] : null;
+    }
+
     function handleTouchStart(e: TouchEvent) {
       e.preventDefault();
       e.stopPropagation();
 
-      if (e.touches.length === 0) return;
+      const touches = surfaceTouches(e.touches);
+      if (touches.length === 0) return;
 
-      const startsNewSequence = e.touches.length === e.changedTouches.length;
+      const startsNewSequence = touches.length === surfaceTouches(e.changedTouches).length;
       if (startsNewSequence) {
         stoppedCoastingOnTouchStart = scrollMomentumRaf !== null;
         stopScrollMomentum();
@@ -296,18 +388,21 @@ export function createTouchGestureController(options: TouchGestureOptions) {
         sequenceCanceled = false;
         isMultiTouch = false;
         maxTouchCount = 0;
+        pairIds = null;
+        twoFingerTapEligible = false;
         scrollLockedByHold = false;
         momentumStartedThisGesture = false;
       }
 
-      activeTouchCount = e.touches.length;
-      maxTouchCount = Math.max(maxTouchCount, e.touches.length);
+      activeTouchCount = touches.length;
+      maxTouchCount = Math.max(maxTouchCount, touches.length);
       if (sequenceCanceled) return;
 
-      if (e.touches.length >= 3) {
+      if (touches.length >= 3) {
         clearSingleFingerTimers();
         clearTwoFingerHoldTimer();
         setZoomScrollActive(false);
+        pairIds = null;
         if (pressedButton !== null) {
           options.onButton('mouseup', pressedButton);
           pressedButton = null;
@@ -319,7 +414,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
         return;
       }
 
-      if (e.touches.length === 2) {
+      if (touches.length === 2) {
         clearSingleFingerTimers();
         if (pressedButton !== null) {
           options.onButton('mouseup', pressedButton);
@@ -329,58 +424,13 @@ export function createTouchGestureController(options: TouchGestureOptions) {
         isDoubleTapCandidate = false;
         isLongPress = false;
 
-        if (!isMultiTouch) {
-          isMultiTouch = true;
-          const now = Date.now();
-          twoFingerStartTime = now;
-          const m = getTwoFingerMetrics(e.touches[0], e.touches[1]);
-          startPinchDist = m.dist;
-          prevPinchDist = m.dist;
-          startMidX = m.midX;
-          startMidY = m.midY;
-          prevMidX = m.midX;
-          prevMidY = m.midY;
-          scrollAnchorX = m.midX;
-          scrollAnchorY = m.midY;
-          maxPinchDelta = 0;
-          maxMidDelta = 0;
-          multiMode = 'undecided';
-          pinchScaleUnlocked = false;
-          scrollLockedByHold = false;
-          momentumStartedThisGesture = false;
-          prevMultiMoveTime = now;
-          lastMultiMoveTime = 0;
-          scrollVelX = 0;
-          scrollVelY = 0;
-          scrollAccX = 0;
-          scrollAccY = 0;
-
-          if (options.getZoom().scale > 1.02) {
-            clearTwoFingerHoldTimer();
-            twoFingerHoldTimer = setTimeout(() => {
-              twoFingerHoldTimer = null;
-              if (!isMultiTouch || activeTouchCount !== 2 || multiMode !== 'undecided') {
-                return;
-              }
-              multiMode = 'scroll';
-              scrollLockedByHold = true;
-              prevMultiMoveTime = Date.now();
-              lastMultiMoveTime = 0;
-              scrollVelX = 0;
-              scrollVelY = 0;
-              scrollAccX = 0;
-              scrollAccY = 0;
-              if (navigator.vibrate) {
-                navigator.vibrate(25);
-              }
-              setZoomScrollActive(true);
-            }, TWO_FINGER_SCROLL_HOLD_MS);
-          }
-        }
+        const firstEntry = !isMultiTouch;
+        isMultiTouch = true;
+        seedTwoFinger(touches[0], touches[1], firstEntry);
         return;
       }
 
-      const touch = e.touches[0];
+      const touch = touches[0];
       const now = Date.now();
       const mode = options.onDirectMove ? options.getTouchMode() : 'trackpad';
 
@@ -440,19 +490,28 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       e.preventDefault();
       e.stopPropagation();
 
-      activeTouchCount = e.touches.length;
-      if (sequenceCanceled || e.touches.length === 0) return;
+      const touches = surfaceTouches(e.touches);
+      activeTouchCount = touches.length;
+      if (sequenceCanceled || touches.length === 0) return;
 
       if (isMultiTouch) {
-        if (e.touches.length !== 2) {
+        if (touches.length !== 2) {
           clearTwoFingerHoldTimer();
-          if (e.touches.length < 2) {
+          pairIds = null;
+          if (touches.length < 2) {
             setZoomScrollActive(false);
           }
           return;
         }
 
-        const m = getTwoFingerMetrics(e.touches[0], e.touches[1]);
+        const pair = findPair(touches);
+        if (!pair) {
+          // The finger set changed since the baselines were taken: re-measure, emit nothing.
+          seedTwoFinger(touches[0], touches[1], false);
+          return;
+        }
+
+        const m = getTwoFingerMetrics(pair[0], pair[1]);
         const distDelta = Math.abs(m.dist - startPinchDist);
         const midDelta = Math.hypot(m.midX - startMidX, m.midY - startMidY);
         maxPinchDelta = Math.max(maxPinchDelta, distDelta);
@@ -527,7 +586,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
         return;
       }
 
-      const touch = e.touches[0];
+      const touch = touches[0];
       const now = Date.now();
       const mode = options.onDirectMove ? options.getTouchMode() : 'trackpad';
 
@@ -585,18 +644,23 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       e.preventDefault();
       e.stopPropagation();
 
-      activeTouchCount = e.touches.length;
+      const touches = surfaceTouches(e.touches);
+      activeTouchCount = touches.length;
       clearSingleFingerTimers();
 
       if (sequenceCanceled) {
-        if (e.touches.length === 0) {
+        if (touches.length === 0) {
           sequenceCanceled = false;
         }
         return;
       }
 
       if (isMultiTouch) {
-        if (e.touches.length < 2) {
+        if (touches.length === 2) {
+          // 3→2: continue with fresh baselines from the remaining pair.
+          seedTwoFinger(touches[0], touches[1], false);
+        } else if (touches.length < 2) {
+          pairIds = null;
           clearTwoFingerHoldTimer();
           setZoomScrollActive(false);
 
@@ -611,9 +675,10 @@ export function createTouchGestureController(options: TouchGestureOptions) {
           }
         }
 
-        if (e.touches.length === 0) {
+        if (touches.length === 0) {
           const duration = Date.now() - twoFingerStartTime;
           if (
+            twoFingerTapEligible &&
             maxTouchCount === 2 &&
             multiMode === 'undecided' &&
             duration <= 280 &&
@@ -624,6 +689,7 @@ export function createTouchGestureController(options: TouchGestureOptions) {
           }
           isMultiTouch = false;
           maxTouchCount = 0;
+          twoFingerTapEligible = false;
           scrollLockedByHold = false;
           momentumStartedThisGesture = false;
           stoppedCoastingOnTouchStart = false;
@@ -661,11 +727,11 @@ export function createTouchGestureController(options: TouchGestureOptions) {
       e.preventDefault();
       e.stopPropagation();
 
-      activeTouchCount = e.touches.length;
+      activeTouchCount = surfaceTouches(e.touches).length;
       cancel(true);
       options.onResetButtons();
 
-      if (e.touches.length === 0) {
+      if (activeTouchCount === 0) {
         sequenceCanceled = false;
       }
     }
