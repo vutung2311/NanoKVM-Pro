@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -52,7 +53,7 @@ func runMouse(h *Hid, queue chan []byte) {
 		inbox <- hidMsg{report: r}
 	}
 	close(inbox)
-	h.runWriter(inbox, newMouseOutbox())
+	h.runWriter(inbox, nil, newMouseOutbox())
 }
 
 type fakeClock struct{ t time.Time }
@@ -84,7 +85,7 @@ func TestKeyboardLosslessOrder(t *testing.T) {
 	close(inbox)
 
 	done := make(chan struct{})
-	go func() { h.runWriter(inbox, newKeyboardOutbox()); close(done) }()
+	go func() { h.runWriter(inbox, nil, newKeyboardOutbox()); close(done) }()
 
 	got := readExactly(t, r, len(want))
 	<-done
@@ -100,7 +101,7 @@ func TestKeyboardRetryAfterStall(t *testing.T) {
 
 	inbox := make(chan hidMsg, 8)
 	done := make(chan struct{})
-	go func() { h.runWriter(inbox, newKeyboardOutbox()); close(done) }()
+	go func() { h.runWriter(inbox, nil, newKeyboardOutbox()); close(done) }()
 
 	seq := [][]byte{kbReport(0, 4), kbReport(0, 0), kbReport(2, 5), kbReport(0, 0)}
 	var want []byte
@@ -245,7 +246,7 @@ func TestMouseRelativeMotionCarriedOverStall(t *testing.T) {
 
 	inbox := make(chan hidMsg, 64)
 	done := make(chan struct{})
-	go func() { h.runWriter(inbox, newMouseOutbox()); close(done) }()
+	go func() { h.runWriter(inbox, nil, newMouseOutbox()); close(done) }()
 
 	for i := 0; i < 50; i++ {
 		inbox <- hidMsg{report: []byte{0, 10, 0xfb, 0, 0}} // dx=10, dy=-5
@@ -274,7 +275,7 @@ func TestMouseButtonUpRetriedAfterStall(t *testing.T) {
 
 	inbox := make(chan hidMsg, 4)
 	done := make(chan struct{})
-	go func() { h.runWriter(inbox, newMouseOutbox()); close(done) }()
+	go func() { h.runWriter(inbox, nil, newMouseOutbox()); close(done) }()
 
 	inbox <- hidMsg{report: []byte{1, 0, 0, 0, 0}}
 	inbox <- hidMsg{report: []byte{0, 0, 0, 0, 0}}
@@ -355,5 +356,111 @@ func TestMouseInvalidReportIgnored(t *testing.T) {
 	o.add(hidMsg{report: []byte{1, 2, 3}})
 	if len(o.entries) != 0 {
 		t.Fatalf("invalid report was queued")
+	}
+}
+
+// ---- host-not-ready handling, bounded submit, submit-time staleness ----
+
+func TestHandleWriteErrHostNotReadyKeepsFile(t *testing.T) {
+	_, w := newPipe(t)
+	h := &Hid{g1: w}
+	for _, cause := range []error{syscall.ESHUTDOWN, syscall.EAGAIN, os.ErrDeadlineExceeded} {
+		err := h.handleWriteErr(1, &h.g1, HID1, []byte{0, 0, 0, 0, 0}, time.Millisecond,
+			&os.PathError{Op: "write", Path: HID1, Err: cause})
+		if !errors.Is(err, ErrHostNotReady) {
+			t.Fatalf("%v: got %v, want ErrHostNotReady", cause, err)
+		}
+		if h.g1 != w {
+			t.Fatalf("%v: file was reopened/closed; want it kept open", cause)
+		}
+	}
+}
+
+func TestHandleWriteErrOtherErrorReopens(t *testing.T) {
+	if _, err := os.Stat(HID1); err == nil {
+		t.Skip("real HID gadget present")
+	}
+	_, w := newPipe(t)
+	h := &Hid{g1: w}
+	err := h.handleWriteErr(1, &h.g1, HID1, nil, time.Millisecond,
+		&os.PathError{Op: "write", Path: HID1, Err: syscall.EBADF})
+	if errors.Is(err, ErrHostNotReady) || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("got %v, want reopen attempt failing with ErrNotExist", err)
+	}
+	if h.g1 != nil {
+		t.Fatalf("broken file should have been closed")
+	}
+}
+
+// A blocked writer (e.g. device mutex held during a HID mode switch) must not
+// stall the producer, and the newest key state must still be delivered.
+func TestSubmitKeyboardOverflowKeepsLatestState(t *testing.T) {
+	r, w := newPipe(t)
+	h := &Hid{g0: w}
+	h.writersOnce.Do(func() { // writer not started: simulate it being blocked
+		h.kbInbox = make(chan hidMsg, 2)
+		h.mouseInbox = make(chan hidMsg, 2)
+	})
+
+	start := time.Now()
+	for key := byte(4); key <= 8; key++ {
+		h.SubmitKeyboard(kbReport(0, key))
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("submit stalled for %s with a full inbox", d)
+	}
+	if !h.kbOverflow.pending.Load() {
+		t.Fatalf("expected overflow slot in use")
+	}
+
+	done := make(chan struct{})
+	go func() { h.runWriter(h.kbInbox, &h.kbOverflow, newKeyboardOutbox()); close(done) }()
+
+	got := readExactly(t, r, 3*keyboardReportLen)
+	close(h.kbInbox)
+	<-done
+
+	keys := []byte{got[2], got[10], got[18]}
+	if keys[0] != 4 || keys[1] != 5 || keys[2] != 8 {
+		t.Fatalf("delivered keys %v, want [4 5 8] (inbox order, then newest overflowed state)", keys)
+	}
+	if h.kbOverflow.pending.Load() {
+		t.Fatalf("overflow slot not drained")
+	}
+}
+
+func TestOverflowReleaseSupersedesEarlierState(t *testing.T) {
+	var s overflowSlot
+	s.put(0, hidMsg{report: kbReport(0, 4)})
+	s.put(0, hidMsg{release: true})
+	s.put(1, hidMsg{report: []byte{1, 0, 0, 0, 0, 0, 0}})
+	got := s.take()
+	if len(got) != 2 || !got[0].release || len(got[1].report) != 7 {
+		t.Fatalf("got %+v, want [release, abs state]", got)
+	}
+	if s.pending.Load() || len(s.take()) != 0 {
+		t.Fatalf("slot not empty after take")
+	}
+}
+
+func TestOutboxesUseSubmitTimestamp(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(100, 0)}
+	old := clk.t.Add(-keyboardStaleAfter - time.Second)
+
+	kb := &keyboardOutbox{now: clk.now}
+	kb.add(hidMsg{report: kbReport(0, 4), at: old})
+	kb.add(hidMsg{report: kbReport(0, 0), at: old})
+	kb.add(hidMsg{report: kbReport(0, 5), at: clk.t})
+	kb.dropStale()
+	if len(kb.entries) != 1 || kb.entries[0].report[2] != 5 {
+		t.Fatalf("keyboard: got %d entries, want only the fresh one", len(kb.entries))
+	}
+
+	m := &mouseOutbox{now: clk.now}
+	m.add(hidMsg{report: []byte{1, 0, 0, 0, 0}, at: clk.t.Add(-2 * mouseStaleAfter)})
+	m.add(hidMsg{report: []byte{0, 3, 0, 0, 0}, at: clk.t})
+	m.dropStale()
+	if len(m.entries) != 1 || m.entries[0].buttons != 0 || m.entries[0].dx != 3 {
+		t.Fatalf("mouse: got %+v, want only the fresh entry", m.entries)
 	}
 }

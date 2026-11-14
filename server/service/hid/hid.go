@@ -19,11 +19,17 @@ type Hid struct {
 	kbMutex    sync.Mutex
 	mouseMutex sync.Mutex
 
+	// Last time a write failure was logged at warn level, per device. Guarded
+	// by the device's mutex (kbMutex for g0, mouseMutex for g1/g2).
+	warnedAt [3]time.Time
+
 	// One writer goroutine per device serializes every producer (all WS
 	// clients, paste, jiggler). Started lazily; see writer.go.
-	writersOnce sync.Once
-	kbInbox     chan hidMsg
-	mouseInbox  chan hidMsg
+	writersOnce   sync.Once
+	kbInbox       chan hidMsg
+	mouseInbox    chan hidMsg
+	kbOverflow    overflowSlot
+	mouseOverflow overflowSlot
 }
 
 const (
@@ -117,6 +123,46 @@ func (h *Hid) Close() {
 	h.CloseNoLock()
 }
 
+// ErrHostNotReady means the gadget is open but the USB host is not taking
+// reports: it is not polling (write deadline), or the endpoint is disabled
+// because the host is off, suspended or unplugged (ESHUTDOWN). Reopening the
+// device cannot help, so callers just retry later.
+var ErrHostNotReady = errors.New("hid host not accepting reports")
+
+// warnInterval bounds how often a persistent write failure is logged at warn
+// level per device; repeats in between go to debug.
+const warnInterval = 10 * time.Second
+
+func isHostNotReady(err error) bool {
+	return errors.Is(err, os.ErrDeadlineExceeded) ||
+		errors.Is(err, syscall.ESHUTDOWN) ||
+		errors.Is(err, syscall.EAGAIN)
+}
+
+// handleWriteErr turns a failed gadget write into the error returned to the
+// writer loop. Host-not-ready errors keep the file open; anything else is
+// treated as a broken file descriptor and the device is reopened once.
+// Must be called with the device's mutex held.
+func (h *Hid) handleWriteErr(dev int, filePtr **os.File, path string, data []byte, deadline time.Duration, err error) error {
+	if isHostNotReady(err) {
+		log.Debugf("write to %s: host not ready (%s)", path, err)
+		return errors.Join(ErrHostNotReady, err)
+	}
+
+	if now := time.Now(); now.Sub(h.warnedAt[dev]) >= warnInterval {
+		h.warnedAt[dev] = now
+		log.Warnf("write to %s failed (%s), reopening", path, err)
+	} else {
+		log.Debugf("write to %s failed (%s), reopening", path, err)
+	}
+
+	rerr := h.recoverFile(filePtr, path, data, deadline)
+	if rerr != nil && isHostNotReady(rerr) {
+		return errors.Join(ErrHostNotReady, rerr)
+	}
+	return rerr
+}
+
 func (h *Hid) recoverFile(filePtr **os.File, path string, data []byte, deadline time.Duration) error {
 	if *filePtr != nil {
 		_ = (*filePtr).Close()
@@ -156,12 +202,7 @@ func (h *Hid) WriteHid0(data []byte) error {
 	_, err := h.g0.Write(data)
 
 	if err != nil {
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			log.Debugf("write to %s timeout (host not polling)", HID0)
-			return err
-		}
-		log.Warnf("write to %s failed (%s), recovering", HID0, err)
-		return h.recoverFile(&h.g0, HID0, data, 20*time.Millisecond)
+		return h.handleWriteErr(0, &h.g0, HID0, data, 20*time.Millisecond, err)
 	}
 
 	log.Debugf("write to %s: %v", HID0, data)
@@ -208,9 +249,8 @@ func (h *Hid) WriteHid1(data []byte) error {
 	_, err := h.g1.Write(payload)
 
 	if err != nil {
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			log.Debugf("write to %s timeout (host not polling)", HID1)
-			return err
+		if isHostNotReady(err) {
+			return h.handleWriteErr(1, &h.g1, HID1, payload, 50*time.Millisecond, err)
 		}
 		recPayload := payload
 		// If gadget report_length is 4 (pre-reboot/legacy kernel gadget), fall back gracefully
@@ -223,8 +263,7 @@ func (h *Hid) WriteHid1(data []byte) error {
 			}
 			recPayload = payload[:4]
 		}
-		log.Warnf("write to %s failed (%s), recovering", HID1, err)
-		return h.recoverFile(&h.g1, HID1, recPayload, 50*time.Millisecond)
+		return h.handleWriteErr(1, &h.g1, HID1, recPayload, 50*time.Millisecond, err)
 	}
 
 	log.Debugf("write to %s: %v", HID1, payload)
@@ -271,9 +310,8 @@ func (h *Hid) WriteHid2(data []byte) error {
 	_, err := h.g2.Write(payload)
 
 	if err != nil {
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			log.Debugf("write to %s timeout (host not polling)", HID2)
-			return err
+		if isHostNotReady(err) {
+			return h.handleWriteErr(2, &h.g2, HID2, payload, 50*time.Millisecond, err)
 		}
 		recPayload := payload
 		// If gadget report_length is 6 (pre-reboot/legacy kernel gadget), fall back gracefully
@@ -286,8 +324,7 @@ func (h *Hid) WriteHid2(data []byte) error {
 			}
 			recPayload = payload[:6]
 		}
-		log.Warnf("write to %s failed (%s), recovering", HID2, err)
-		return h.recoverFile(&h.g2, HID2, recPayload, 50*time.Millisecond)
+		return h.handleWriteErr(2, &h.g2, HID2, recPayload, 50*time.Millisecond, err)
 	}
 
 	log.Debugf("write to %s: %v", HID2, payload)
