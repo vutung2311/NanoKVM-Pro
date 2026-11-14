@@ -87,16 +87,9 @@ chown _chrony:_chrony /var/lib/chrony >/dev/null 2>&1 || true
 
 mkdir -p /sdcard
 
-if [ -f "$WIFI_CONF" ]; then
-    SSID=$(grep '^WIFI_CFG_SSID=' "$WIFI_CONF" | cut -d'=' -f2-)
-    PASSWD=$(grep '^WIFI_CFG_PASSWD=' "$WIFI_CONF" | cut -d'=' -f2-)
-
-    if [ -n "$SSID" ] && [ -n "$PASSWD" ]; then
-        SCRIPTS_ROOT="/kvmcomm/scripts"
-        nohup "${SCRIPTS_ROOT}/wifi.sh" connect_start "$SSID" "$PASSWD" >/dev/null 2>&1 </dev/null &
-        disown
-    fi
-fi
+# Wi-Fi is (re)connected only by kvmcomm.sh's `wifi.sh try_connect`, which
+# also migrates a legacy $WIFI_CONF passphrase. A second trigger here raced it
+# and dropped a working link.
 
 if [ -f /boot/configs ]; then
     sed -i 's/\(maix_memory_cmm=\).*/\1200/' /boot/configs || true

@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 
-readonly SCRIPTS_ROOT="/kvmcomm/scripts"
-readonly WIFI_SCRIPT="${SCRIPTS_ROOT}/wifi.sh"
-
-(
-    sleep 10
-    "${WIFI_SCRIPT}" try_connect > /dev/null 2>&1
-) &
+# Wi-Fi reconnect on boot is kvmcomm.sh's job (`wifi.sh try_connect`); a
+# second trigger here flushed the address and restarted DHCP on a link that
+# was already up.
 
 trap 'exit 0' SIGINT SIGTERM
 
