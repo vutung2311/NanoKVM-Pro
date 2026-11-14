@@ -2,6 +2,7 @@ package ws
 
 import (
 	"encoding/json"
+	"sync/atomic"
 	"time"
 
 	"NanoKVM-Server/service/hid"
@@ -15,6 +16,15 @@ const (
 	Heartbeat = iota
 	KeyboardEvent
 	MouseEvent
+)
+
+// HID reports carry the full key/button state, so whatever a device holds
+// was set by the client that sent to it last. On disconnect a client releases
+// a device only while it is still that sender: closing one tab must not drop
+// another user's held modifier or drag.
+var (
+	keyboardOwner atomic.Pointer[Client]
+	mouseOwner    atomic.Pointer[Client]
 )
 
 func NewClient(ws *websocket.Conn) *Client {
@@ -55,9 +65,11 @@ func (c *Client) Read() error {
 		case Heartbeat:
 			c.UpdateHeartbeat()
 		case KeyboardEvent:
+			keyboardOwner.Store(c)
 			c.hid.SubmitKeyboard(data[1:])
 			jiggler.GetJiggler().Update()
 		case MouseEvent:
+			mouseOwner.Store(c)
 			c.hid.SubmitMouse(data[1:])
 			jiggler.GetJiggler().Update()
 		}
@@ -94,8 +106,13 @@ func (c *Client) Close() {
 		_ = c.ws.Close()
 
 		// The browser may have vanished mid-press (network drop, crash): make
-		// sure nothing stays held on the host.
-		c.hid.ReleaseAll()
+		// sure nothing it was holding stays held on the host.
+		if keyboardOwner.CompareAndSwap(c, nil) {
+			c.hid.ReleaseKeyboard()
+		}
+		if mouseOwner.CompareAndSwap(c, nil) {
+			c.hid.ReleaseMouse()
+		}
 
 		log.Debug("websocket disconnected")
 	})

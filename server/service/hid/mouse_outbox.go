@@ -146,19 +146,45 @@ func (o *mouseOutbox) addEntry(e mouseEntry, now time.Time) {
 	o.entries = append(o.entries, e)
 }
 
-// collapse replaces all pending entries with a single state-sync report that
-// carries the latest buttons (and absolute position) but no motion or wheel.
+// stateSync returns zero-motion copies of the last entry of each device
+// (relative, absolute) found in entries, in the order those entries appeared.
+// Replaying them gives the host the latest button state (and absolute
+// position) of every device, without stale motion or wheel ticks.
+func stateSync(entries []mouseEntry, now time.Time) []mouseEntry {
+	lastRel, lastAbs := -1, -1
+	for i := range entries {
+		if entries[i].absolute {
+			lastAbs = i
+		} else {
+			lastRel = i
+		}
+	}
+	var out []mouseEntry
+	for i := range entries {
+		if i != lastRel && i != lastAbs {
+			continue
+		}
+		e := entries[i]
+		e.dx, e.dy, e.wheel, e.hwheel = 0, 0, 0, 0
+		e.abs[5], e.abs[6] = 0, 0
+		e.since = now
+		out = append(out, e)
+	}
+	return out
+}
+
+// collapse replaces all pending entries with a state sync per device, so a
+// queued button change on the other device (relative vs. absolute) is not
+// lost when only the newest entry would be kept.
 func (o *mouseOutbox) collapse(now time.Time) {
-	sync := o.entries[len(o.entries)-1]
-	sync.dx, sync.dy, sync.wheel, sync.hwheel = 0, 0, 0, 0
-	sync.abs[5], sync.abs[6] = 0, 0
-	sync.since = now
-	o.entries = append(o.entries[:0], sync)
+	sync := stateSync(o.entries, now)
+	o.entries = append(o.entries[:0], sync...)
 }
 
 // dropStale discards entries that have waited longer than mouseStaleAfter.
-// If every entry is stale, a single state-sync report is kept so the host
-// still ends up with the correct button state.
+// A device whose latest state is only in the dropped part keeps one
+// state-sync report, so the host still ends up with every device's correct
+// button state.
 func (o *mouseOutbox) dropStale() {
 	if len(o.entries) == 0 {
 		return
@@ -168,17 +194,28 @@ func (o *mouseOutbox) dropStale() {
 	for firstFresh < len(o.entries) && now.Sub(o.entries[firstFresh].since) >= mouseStaleAfter {
 		firstFresh++
 	}
-	switch {
-	case firstFresh == 0:
+	if firstFresh == 0 {
 		return
-	case firstFresh == len(o.entries):
-		log.Debugf("dropping %d stale mouse reports, keeping state sync", len(o.entries))
-		o.collapse(now)
-	default:
-		log.Debugf("dropping %d stale mouse reports", firstFresh)
-		n := copy(o.entries, o.entries[firstFresh:])
-		o.entries = o.entries[:n]
 	}
+	log.Debugf("dropping %d stale mouse reports", firstFresh)
+
+	stale, fresh := o.entries[:firstFresh], o.entries[firstFresh:]
+	freshRel, freshAbs := false, false
+	for i := range fresh {
+		if fresh[i].absolute {
+			freshAbs = true
+		} else {
+			freshRel = true
+		}
+	}
+	keep := make([]mouseEntry, 0, 2+len(fresh))
+	for _, e := range stateSync(stale, now) {
+		if (e.absolute && !freshAbs) || (!e.absolute && !freshRel) {
+			keep = append(keep, e)
+		}
+	}
+	keep = append(keep, fresh...)
+	o.entries = append(o.entries[:0], keep...)
 }
 
 // full leaves one slot of headroom: release() may append two entries.

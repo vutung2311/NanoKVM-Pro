@@ -233,10 +233,20 @@ func (h *Hid) SubmitMouse(report []byte) {
 // ReleaseAll queues a release of every key and button that is currently held,
 // e.g. when a client disconnects mid-press. Nothing is sent if nothing is held.
 func (h *Hid) ReleaseAll() {
+	h.ReleaseKeyboard()
+	h.ReleaseMouse()
+}
+
+// ReleaseKeyboard queues a release of every held key and modifier.
+func (h *Hid) ReleaseKeyboard() {
 	h.startWriters()
-	now := time.Now()
-	enqueue(h.kbInbox, &h.kbOverflow, 0, hidMsg{release: true, at: now})
-	enqueue(h.mouseInbox, &h.mouseOverflow, 0, hidMsg{release: true, at: now})
+	enqueue(h.kbInbox, &h.kbOverflow, 0, hidMsg{release: true, at: time.Now()})
+}
+
+// ReleaseMouse queues a release of every held mouse button (both devices).
+func (h *Hid) ReleaseMouse() {
+	h.startWriters()
+	enqueue(h.mouseInbox, &h.mouseOverflow, 0, hidMsg{release: true, at: time.Now()})
 }
 
 // runWriter is the per-device delivery loop. It returns when inbox is closed.

@@ -3,6 +3,7 @@ package hid
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestClampInt8(t *testing.T) {
@@ -409,4 +410,54 @@ func TestWriteHid2LegacyLatched(t *testing.T) {
 	}
 }
 
+// Overflow collapse keeps the latest state of each device: a queued absolute
+// button-up must survive later relative traffic (stuck-button regression).
+func TestMouseCollapseKeepsEveryDeviceState(t *testing.T) {
+	o := newMouseOutbox()
+	now := time.Now()
+	o.now = func() time.Time { return now }
 
+	o.add(hidMsg{report: []byte{1, 0x10, 0, 0x10, 0, 0, 0}, at: now}) // abs down
+	o.add(hidMsg{report: []byte{0, 0x10, 0, 0x10, 0, 0, 0}, at: now}) // abs up
+	for i := 0; i < mouseOutboxMax+5; i++ {                           // rel, alternating buttons
+		o.add(hidMsg{report: []byte{byte(i % 2), 1, 1, 0}, at: now})
+	}
+
+	var absUp, rel bool
+	for _, e := range o.entries {
+		if e.absolute && e.abs[0] == 0 {
+			absUp = true
+		}
+		if !e.absolute {
+			rel = true
+		}
+	}
+	if !absUp || !rel {
+		t.Fatalf("collapse lost a device state: absUp=%v rel=%v entries=%+v", absUp, rel, o.entries)
+	}
+}
+
+// Dropping a stale prefix keeps a state sync for a device that has no fresh
+// entry, so its last button change still reaches the host.
+func TestMouseDropStaleKeepsOtherDeviceState(t *testing.T) {
+	o := newMouseOutbox()
+	t0 := time.Now()
+	now := t0
+	o.now = func() time.Time { return now }
+
+	o.add(hidMsg{report: []byte{1, 0x10, 0, 0x10, 0, 0, 0}, at: t0}) // abs down (stale)
+	o.add(hidMsg{report: []byte{0, 0x10, 0, 0x10, 0, 0, 0}, at: t0}) // abs up (stale)
+	now = t0.Add(2 * mouseStaleAfter)
+	o.add(hidMsg{report: []byte{0, 5, 5, 0}, at: now}) // rel move (fresh)
+
+	o.dropStale()
+	if len(o.entries) != 2 {
+		t.Fatalf("entries = %+v, want abs sync then rel move", o.entries)
+	}
+	if !o.entries[0].absolute || o.entries[0].abs[0] != 0 {
+		t.Fatalf("first entry %+v is not the absolute button-up sync", o.entries[0])
+	}
+	if o.entries[1].absolute || o.entries[1].dx != 5 {
+		t.Fatalf("second entry %+v is not the fresh relative move", o.entries[1])
+	}
+}
