@@ -339,11 +339,10 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
             "mkdir -p /etc/systemd/system/ssh.service.d",
             '''printf '[Unit]\\nDescription=OpenBSD Secure Shell server\\n\\n[Service]\\nRuntimeDirectory=sshd\\nRuntimeDirectoryMode=0755\\nExecStartPre=/bin/mkdir -p -m 0755 /run/sshd\\n' > /etc/systemd/system/ssh.service.d/override.conf''',
             "mkdir -p /etc/kvm",
-            '''if [ ! -f /etc/kvm/server.crt ] || [ ! -f /etc/kvm/server.key ]; then
-                openssl req -x509 -newkey rsa:2048 -keyout /etc/kvm/server.key -out /etc/kvm/server.crt -days 3650 -nodes -subj "/CN=localhost"
-                chmod 600 /etc/kvm/server.key
-                chmod 644 /etc/kvm/server.crt
-            fi''',
+            # No TLS key in the image: one generated here would be shared by
+            # every device flashed from it. nanokvm.sh generates a per-device
+            # key on first start (makesure_https_crt).
+            "rm -f /etc/kvm/server.key /etc/kvm/server.crt",
             '''if [ -f /etc/rc.local ]; then
                 sed -i '/192\\.168\\.100\\.200/d' /etc/rc.local
                 chmod 0755 /etc/rc.local

@@ -4,12 +4,66 @@ set -e
 mkdir -p /etc/kvm
 mkdir -p /var/log/nanokvm
 
-# Generate default self-signed certs if missing so server starts immediately
-if [ ! -f /etc/kvm/server.crt ] || [ ! -f /etc/kvm/server.key ]; then
-    openssl req -x509 -newkey rsa:2048 \
+# The TLS key and device_number once shipped in this package (and in the
+# rootfs blobs) were identical on every device. See preinst.
+SHARED_KEY_SHA256=6f86bde33a842b8e9d59e7eb0539c5f40c549fc521c596cfd91b92ca1fcb5975
+SHARED_DEVICE_NUMBER=NebE20020
+PRESERVE_DIR=/var/lib/nanokvmpro/preserve
+
+file_sha256() { sha256sum "$1" | cut -d' ' -f1; }
+is_shared_key() { [ -f "$1" ] && [ "$(file_sha256 "$1")" = "$SHARED_KEY_SHA256" ]; }
+is_shared_device_number() { [ -f "$1" ] && [ "$(tr -d '[:space:]' < "$1")" = "$SHARED_DEVICE_NUMBER" ]; }
+
+saved_path() { echo "$PRESERVE_DIR/${1//\//_}"; }
+
+restore_preserved() {
+    local saved
+    saved=$(saved_path "$1")
+    if [ ! -e "$1" ] && [ -f "$saved" ]; then
+        cp -p "$saved" "$1"
+    fi
+}
+
+if [ -d "$PRESERVE_DIR" ]; then
+    saved_key=$(saved_path /etc/kvm/server.key)
+    if [ -f "$saved_key" ] && ! is_shared_key "$saved_key"; then
+        # A certificate of the device's own (user-installed or generated):
+        # keep the pair.
+        restore_preserved /etc/kvm/server.key
+        restore_preserved /etc/kvm/server.crt
+    fi
+    for f in /etc/kvm/device_number /kvmapp/device_number; do
+        saved=$(saved_path "$f")
+        if [ -f "$saved" ] && ! is_shared_device_number "$saved"; then
+            mkdir -p "$(dirname "$f")"
+            restore_preserved "$f"
+        fi
+    done
+    rm -rf "$PRESERVE_DIR"
+fi
+
+# A shared key left over from an image built with the old rootfs blobs: drop
+# it so a per-device one is generated below or by nanokvm.sh.
+if is_shared_key /etc/kvm/server.key; then
+    rm -f /etc/kvm/server.key /etc/kvm/server.crt
+fi
+# The shared device_number equals the server's desk default and hides ATX
+# detection; the server falls back to the hardware report without it.
+for f in /etc/kvm/device_number /kvmapp/device_number; do
+    if is_shared_device_number "$f"; then
+        rm -f "$f"
+    fi
+done
+
+# Generate a self-signed cert if missing so the server starts immediately.
+# Not inside an image-build chroot: that key would be baked into every device
+# flashed from the image. nanokvm.sh generates it on first start instead.
+if [ "$(stat -c %d:%i /)" == "$(stat -c %d:%i /proc/1/root/.)" ] && \
+   { [ ! -f /etc/kvm/server.crt ] || [ ! -f /etc/kvm/server.key ]; }; then
+    (umask 077; openssl req -x509 -newkey rsa:2048 \
         -keyout /etc/kvm/server.key \
         -out /etc/kvm/server.crt \
-        -days 3650 -nodes -subj "/CN=localhost" >/dev/null 2>&1
+        -days 3650 -nodes -subj "/CN=localhost" >/dev/null 2>&1)
     chmod 600 /etc/kvm/server.key
     chmod 644 /etc/kvm/server.crt
 fi
