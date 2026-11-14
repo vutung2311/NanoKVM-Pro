@@ -38,11 +38,14 @@ func getSystemctlClient() (*dbus.Conn, error) {
 	return systemctlClient, nil
 }
 
-func resetSystemctlClient() {
+// resetSystemctlClient drops failed if it is still the shared connection.
+// Another goroutine may already have replaced it after the same failure;
+// closing that newer connection would break its in-flight calls.
+func resetSystemctlClient(failed *dbus.Conn) {
 	systemctlClientMu.Lock()
 	defer systemctlClientMu.Unlock()
 
-	if systemctlClient != nil {
+	if systemctlClient != nil && systemctlClient == failed {
 		systemctlClient.Close()
 		systemctlClient = nil
 	}
@@ -68,7 +71,7 @@ func IsServiceRunning(servicename string) (bool, error) {
 	properties, err := client.GetUnitPropertiesContext(ctx, servicename)
 	if err != nil {
 		if isConnectionError(err) {
-			resetSystemctlClient()
+			resetSystemctlClient(client)
 		}
 		return false, err
 	}
@@ -140,7 +143,7 @@ func StartService(name string, enable bool) error {
 		_, _, err := client.EnableUnitFilesContext(ctx, []string{name}, false, true)
 		if err != nil {
 			if isConnectionError(err) {
-				resetSystemctlClient()
+				resetSystemctlClient(client)
 			}
 			return fmt.Errorf("failed to enable service: %v", err)
 		}
@@ -160,7 +163,7 @@ func StartService(name string, enable bool) error {
 
 	if _, err := client.StartUnitContext(ctx, name, "replace", ch); err != nil {
 		if isConnectionError(err) {
-			resetSystemctlClient()
+			resetSystemctlClient(client)
 		}
 		return fmt.Errorf("failed to start service: %v", err)
 	}
@@ -195,7 +198,7 @@ func RestartService(serviceName string) error {
 
 	if _, err := client.RestartUnitContext(ctx, serviceName, "replace", ch); err != nil {
 		if isConnectionError(err) {
-			resetSystemctlClient()
+			resetSystemctlClient(client)
 		}
 		return fmt.Errorf("failed to restart service: %v", err)
 	}
