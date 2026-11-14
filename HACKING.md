@@ -133,6 +133,7 @@
     scp support/kernel/linux/linux-4.19.125/drivers/misc/lt6911_manage.ko root@<IP>:/kvmcomm/ko_4.19.125/
     ssh root@<IP> "systemctl stop kvmcomm && rmmod lt6911_manage && insmod /kvmcomm/ko_4.19.125/lt6911_manage.ko && systemctl start kvmcomm"
     ```
+    On the next kvmcomm start, a module in `/kvmcomm/ko_<kver>/` is used only if its `MODULE_VERSION` is the same as or newer than the one in `/kvmcomm/ko/` (or either has none). An older one is skipped and logged ([`ko_override.sh`](support/packages/kvmcomm/kvmcomm/scripts/ko_override.sh)), so bump the version when you deploy a test build there.
 - [x] **Step 15: End-to-End In-System Firmware Update Packaging (`make firmware-pkg` & `make firmware-flash`):**
   * **Unified Recompile & Packaging Recipe:** Added [`support/scripts/package_firmware.sh`](file:///home/tung/Git/NanoKVM-Pro/support/scripts/package_firmware.sh) and Makefile targets `make firmware-pkg` (alias: `make update-pkg`) and `make firmware-flash IP=<ip>` (alias: `make update-flash`).
   * **End-to-End Build Automation:** Runs full recompile of server, web frontend (Vite), Debian packages (`nanokvmpro` & `kvmcomm`), and Linux kernel & modules, then stages signed boot binaries (`boot_signed.bin`, DTB, `u-boot_signed.bin`), rootfs overlay, and version metadata.

@@ -459,21 +459,40 @@ check_device_health() {
     echo -e "${GREEN}[✓] Slot A failsafe partitions intact (/dev/mmcblk0p12, /dev/mmcblk0p14).${RESET}"
 
     # 4. Stock 4.19.125 Module Preservation
+    # The backup goes to a directory nothing loads from. It used to go to
+    # /kvmcomm/ko_4.19.125/, which kvmcomm prefers over /kvmcomm/ko/ on a
+    # 4.19.125 kernel, so the backup shadowed every later module update.
     local has_stock_modules
     has_stock_modules=$(ssh "root@${target_host}" "
-        if [ -d /kvmcomm/ko_4.19.125 ] && [ -f /kvmcomm/ko_4.19.125/lt6911_manage.ko ]; then
+        if [ -f /kvmcomm/ko_stock_backup/lt6911_manage.ko ]; then
             echo 'EXISTS'
         else
-            mkdir -p /kvmcomm/ko_4.19.125
-            cp -n /kvmcomm/ko/*.ko /kvmcomm/ko_4.19.125/ 2>/dev/null || true
-            cp -n /soc/ko/*.ko /kvmcomm/ko_4.19.125/ 2>/dev/null || true
+            mkdir -p /kvmcomm/ko_stock_backup
+            cp -n /kvmcomm/ko/*.ko /kvmcomm/ko_stock_backup/ 2>/dev/null || true
+            cp -n /soc/ko/*.ko /kvmcomm/ko_stock_backup/ 2>/dev/null || true
             echo 'BACKED_UP'
         fi
     ")
     if [[ "${has_stock_modules}" == "EXISTS" ]]; then
-        echo -e "${GREEN}[✓] Stock 4.19.125 modules preserved in /kvmcomm/ko_4.19.125/.${RESET}"
+        echo -e "${GREEN}[✓] Stock 4.19.125 modules preserved in /kvmcomm/ko_stock_backup/.${RESET}"
     else
-        echo -e "${YELLOW}[!] Stock modules were missing in /kvmcomm/ko_4.19.125/; backed up safely.${RESET}"
+        echo -e "${YELLOW}[!] Stock modules were missing in /kvmcomm/ko_stock_backup/; backed up safely.${RESET}"
+    fi
+
+    # Report (never delete) an lt6911_manage.ko override that differs from
+    # the shipped one; kvmcomm skips an override older than /kvmcomm/ko/.
+    local lt_versions
+    lt_versions=$(ssh "root@${target_host}" "
+        o=/kvmcomm/ko_\$(uname -r)/lt6911_manage.ko
+        [ -f \"\$o\" ] || exit 0
+        echo \"\$(modinfo -F version \"\$o\" 2>/dev/null)|\$(modinfo -F version /kvmcomm/ko/lt6911_manage.ko 2>/dev/null)|\$(cat /sys/module/lt6911_manage/version 2>/dev/null)\"
+    ")
+    if [[ -n "${lt_versions}" ]]; then
+        local v_over v_ship v_live
+        IFS='|' read -r v_over v_ship v_live <<< "${lt_versions}"
+        if [[ "${v_over}" != "${v_ship}" ]]; then
+            echo -e "${YELLOW}[!] lt6911_manage override in /kvmcomm/ko_${r_kver}/ is ${v_over:-unversioned}, shipped is ${v_ship:-unversioned}, loaded is ${v_live:-none}.${RESET}"
+        fi
     fi
 
     # 5. Hardware Subsystems & Services
