@@ -282,6 +282,26 @@ export const MobileKeyboard = () => {
     }
   }, [blurInput, isKeyboardEnable, isOpen]);
 
+  // Android's back gesture hides the IME without blurring the textarea, so isOpen would stay
+  // true (accessory bar lingers, the next toggle only blurs). Treat the viewport inset going
+  // from "keyboard shown" back to none as a close. Only after the keyboard was actually seen,
+  // so tablets with a hardware keyboard (inset never grows) are unaffected.
+  const keyboardSeenRef = useRef(false);
+  useEffect(() => {
+    if (!isTouchDevice || !isOpen) {
+      keyboardSeenRef.current = false;
+      return;
+    }
+    if (viewport.isKeyboardLikelyOpen) {
+      keyboardSeenRef.current = true;
+      return;
+    }
+    if (keyboardSeenRef.current) {
+      keyboardSeenRef.current = false;
+      blurInput();
+    }
+  }, [blurInput, isOpen, isTouchDevice, viewport.isKeyboardLikelyOpen]);
+
   useEffect(() => {
     return registerMobileKeyboardController({
       focus: focusInput,
