@@ -291,6 +291,14 @@ if [ -x /usr/sbin/ifplugd ]; then
     sed -i '/allow-hotplug eth0/d' /etc/network/interfaces 2>/dev/null || true
 fi
 
+# No machine identity in the image. apt (systemd, dbus) created one in this
+# chroot; every device flashed from it would share it, and with it the
+# systemd-derived eth0 MAC and DHCP identity. An empty (not missing)
+# /etc/machine-id makes systemd generate a fresh one on first boot.
+: > /etc/machine-id
+mkdir -p /var/lib/dbus
+ln -sf /etc/machine-id /var/lib/dbus/machine-id
+
 # Clean up apt caches to save space
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/*

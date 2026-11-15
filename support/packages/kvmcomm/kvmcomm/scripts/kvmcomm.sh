@@ -332,6 +332,11 @@ mark_booted_slot_good() {
 }
 mark_booted_slot_good
 
+# One-time repairs of device state (see device_repairs.sh). kvmcomm's postinst
+# runs the same script, but a firmware-package update never runs postinst, so
+# apply them here too. A no-op once applied.
+"${SCRIPTS_ROOT}/device_repairs.sh" >>"$LOG_FILE" 2>&1 || true
+
 # CPU frequency: with a kernel whose default governor scales (schedutil), keep a
 # 500 MHz floor so interrupt-heavy paths (USB HID, network) stay responsive; the
 # lowest OPP is the 24 MHz crystal. Kernels left on the userspace governor never

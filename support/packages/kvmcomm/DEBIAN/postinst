@@ -124,6 +124,11 @@ if ip link show eth0 2>/dev/null | grep -q "NO-CARRIER"; then
     pkill -f "dhclient.*eth0" 2>/dev/null || true
 fi
 
+# One-time device repairs (see device_repairs.sh). They live in /kvmcomm/scripts
+# so a firmware-package update, which never runs this postinst, delivers them
+# too; kvmcomm.sh runs the same script at boot.
+/kvmcomm/scripts/device_repairs.sh || echo "kvmcomm: device_repairs.sh failed" >&2
+
 ldconfig
 
 # App logs moved to a tmpfs (var-log-kvmcomm.mount). Drop the copies that

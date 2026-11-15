@@ -443,6 +443,15 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
         run_chroot_commands(mount_point=mount_point, commands=["touch /var/lib/misc/udhcpd.usb0.leases"])
         run_chroot_commands(mount_point=mount_point, commands=["chmod 644 /var/lib/misc/udhcpd.usb0.leases"])
 
+        # Ship no machine identity: anything installed above may have
+        # recreated one, and every device flashed from this image would share
+        # it (and the systemd-derived eth0 MAC and DHCP identity). Empty, not
+        # missing, so systemd generates a fresh id on first boot.
+        run_chroot_commands(mount_point=mount_point, commands=[
+            ": > /etc/machine-id",
+            "mkdir -p /var/lib/dbus && ln -sf /etc/machine-id /var/lib/dbus/machine-id",
+        ])
+
         # Zero unallocated blocks before unmount so img2simg skips empty space
         run_chroot_commands(mount_point=mount_point, commands=[
             "dd if=/dev/zero of=/zero.fill bs=1M status=none 2>/dev/null || true",
