@@ -44,6 +44,22 @@ for hook in /etc/network/if-up.d/resolved /etc/network/if-down.d/resolved; do
     fi
 done
 
+# apt enables Ubuntu's hostapd.service when the image is built, but nothing
+# here uses it: wifi.sh starts hostapd itself, from a config it writes under
+# /dev/shm. With no /etc/hostapd/hostapd.conf the unit fails at once, and
+# Restart=on-failure retries it every 2 s for as long as the device runs
+# (3800 restarts in a little over two hours). Disable it while that config is
+# absent, so a hand-made AP setup that provides one is left alone.
+if [ ! -e /etc/hostapd/hostapd.conf ] &&
+    [ "$(systemctl is-enabled hostapd.service 2>/dev/null)" = enabled ]; then
+    systemctl disable hostapd.service >/dev/null 2>&1 || true
+    if [ -d /run/systemd/system ]; then
+        systemctl stop hostapd.service >/dev/null 2>&1 || true
+        systemctl reset-failed hostapd.service >/dev/null 2>&1 || true
+    fi
+    echo "kvmcomm: disabled hostapd.service (no /etc/hostapd/hostapd.conf; wifi.sh runs hostapd itself)"
+fi
+
 # Images built before the build scripts emptied /etc/machine-id shipped one
 # fixed id, shared by every device flashed from them (and with it the
 # systemd-derived eth0 MAC and DHCP identity). Give this device its own,
