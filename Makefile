@@ -257,7 +257,7 @@ web-pkg: deb
 	@cd $(DIST_DIR) && tar -czf nanokvm_pro_$(VERSION).tar.gz nanokvm_pro_$(VERSION)/
 	@echo -e "$(GREEN)[✓] Web update package ready: $(DIST_DIR)/nanokvm_pro_$(VERSION).tar.gz$(RESET)"
 
-## Build full in-system firmware update package (.tar.xz) with kernel, DTB, U-Boot & rootfs overlay
+## Build full in-system firmware update package (.tar.gz) with kernel, DTB, U-Boot & rootfs overlay
 firmware-pkg: build deb kernel
 	@bash $(SUPPORT_DIR)/scripts/package_firmware.sh build
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # NanoKVM-Pro In-System Firmware Package Builder & Flasher
-# Produces: axera_firmware_v<VERSION>.tar.xz
+# Produces: axera_firmware_v<VERSION>.tar.gz
 # Compatible with: WebUI manual update, REST API, /kvmcomm/scripts/firmware_update.sh
 # -----------------------------------------------------------------------------
 
@@ -21,7 +21,7 @@ SIGNED_BOOT="${KERNEL_DIR}/boot_signed.bin"
 SIGNED_DTB="${KERNEL_DIR}/AX630C_emmc_arm64_k419_sipeed_nanokvm_signed.dtb"
 
 VERSION="${VERSION:-1.2.15}"
-OUTPUT_TAR="${DIST_DIR}/axera_firmware_v${VERSION}.tar.xz"
+OUTPUT_TAR="${DIST_DIR}/axera_firmware_v${VERSION}.tar.gz"
 
 # ANSI Colors
 RED="\033[31;1m"
@@ -42,7 +42,7 @@ build_firmware_package() {
     build_date=$(date +"%Y-%m-%d")
 
     echo -e "${CYAN}==================================================================${RESET}"
-    echo -e "${CYAN}==> Packaging In-System Firmware Update: axera_firmware_v${VERSION}.tar.xz${RESET}"
+    echo -e "${CYAN}==> Packaging In-System Firmware Update: axera_firmware_v${VERSION}.tar.gz${RESET}"
     echo -e "${CYAN}    Kernel Version: ${kver} | Build Date: ${build_date}${RESET}"
     echo -e "${CYAN}==================================================================${RESET}"
 
@@ -178,12 +178,14 @@ with zipfile.ZipFile('${BASE_AXP}') as z:
         exit 1
     fi
 
-    # 5. Compress to final tar.xz using parallel XZ compression
-    echo -e "${CYAN}[+] Compressing archive with parallel XZ: ${out_tar}...${RESET}"
+    # 5. Compress with gzip, not xz: the device's firmware_update.sh extracts with
+    # plain `tar -xf`, which needs an external decompressor, and Jammy-based
+    # images had no /usr/bin/xz ("xz: Cannot exec"). gzip is in every image.
+    echo -e "${CYAN}[+] Compressing archive with gzip: ${out_tar}...${RESET}"
     mkdir -p "$(dirname "${out_tar}")"
     (
         cd "${stage_dir}"
-        tar -I "xz -T0" -cf "${out_tar}" firmware overlay b2sum.txt
+        tar -I "gzip -9" -cf "${out_tar}" firmware overlay b2sum.txt
     )
     rm -rf "${stage_dir}"
 
