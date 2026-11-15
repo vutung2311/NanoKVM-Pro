@@ -4,7 +4,6 @@ import signal
 import time
 import fcntl
 import asyncio
-import aiofiles
 import argparse
 import logging
 from typing import List, Tuple
@@ -43,12 +42,37 @@ class SleepMsgType:
     ui_ivps_active = 3
 
 
+# File I/O runs in a worker thread so the event loop (which also serves the
+# activity socket) never waits on it. Reads of these proc files are sub-ms, but
+# a power write can block in the driver for tens to hundreds of ms (it waits
+# for an in-flight I2C transaction, or cancel_delayed_work_sync). A thread
+# pool is all an async-file library would do here; the stdlib needs no extra
+# package in the image.
+def _read_text_sync(path: str) -> str:
+    with open(path, "r") as f:
+        return f.read()
+
+
+def _write_text_sync(path: str, data: str) -> None:
+    # The with-block closes the file before returning, so an error the driver
+    # reports on close (a rejected proc write) is raised here, not lost.
+    with open(path, "w") as f:
+        f.write(data)
+
+
+async def _read_text(path: str) -> str:
+    return await asyncio.to_thread(_read_text_sync, path)
+
+
+async def _write_text(path: str, data: str) -> None:
+    await asyncio.to_thread(_write_text_sync, path, data)
+
+
 async def _write_flag(path: str, on: bool):
     # Errors propagate: the caller must not record a state the hardware never
-    # reached. A proc write the driver rejects fails on close, which aiofiles
-    # surfaces here as an OSError.
-    async with aiofiles.open(path, "w") as f:
-        await f.write("1" if on else "0")
+    # reached. A proc write the driver rejects fails on close, which
+    # _write_text surfaces here as an OSError.
+    await _write_text(path, "1" if on else "0")
 
 
 async def set_lt86102_power(on: bool):
@@ -110,11 +134,10 @@ async def wait_for_driver_ready(timeout_sec: float = 30.0) -> bool:
     while time.time() - start < timeout_sec:
         try:
             if os.path.exists(initstate_path) and os.path.exists(power_proc_path):
-                async with aiofiles.open(initstate_path, "r") as f:
-                    content = (await f.read()).strip()
-                    if content == "live":
-                        logger.info("lt6911_manage driver is live and ready")
-                        return True
+                content = (await _read_text(initstate_path)).strip()
+                if content == "live":
+                    logger.info("lt6911_manage driver is live and ready")
+                    return True
         except Exception:
             pass
         await asyncio.sleep(0.5)
@@ -126,8 +149,7 @@ async def wait_for_driver_ready(timeout_sec: float = 30.0) -> bool:
 async def _read_flag(path: str) -> bool | None:
     """Read an on/off proc flag; None when it cannot be read."""
     try:
-        async with aiofiles.open(path, "r") as f:
-            content = await f.read()
+        content = await _read_text(path)
         return content.strip() == "on"
     except Exception as e:
         logger.error(f"Failed to read {path}: {e}")
@@ -156,9 +178,8 @@ async def wait_for_capture_signal(timeout_sec: float) -> bool:
     start = time.time()
     while time.time() - start < timeout_sec:
         try:
-            async with aiofiles.open("/proc/lt6911_info/width", "r") as f:
-                if int((await f.read()).strip() or "0") > 0:
-                    return True
+            if int((await _read_text("/proc/lt6911_info/width")).strip() or "0") > 0:
+                return True
         except (OSError, ValueError):
             pass
         await asyncio.sleep(0.1)
@@ -337,8 +358,7 @@ async def try_set_power(on: bool):
 async def is_venc_working() -> bool:
     path = "/proc/ax_proc/venc"
     try:
-        async with aiofiles.open(path, "r") as f:
-            content = await f.read()
+        content = await _read_text(path)
         return "VENC CHN ATTR 1" in content
     except Exception:
         return False
@@ -346,8 +366,7 @@ async def is_venc_working() -> bool:
 async def is_strip_working() -> bool:
     path = "/etc/kvm/kvm_ui.toml"
     try:
-        async with aiofiles.open(path, "r") as f:
-            text = await f.read()
+        text = await _read_text(path)
     except Exception as e:
         return False
 

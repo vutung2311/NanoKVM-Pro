@@ -2,7 +2,8 @@
 """Host-side mock tests for kvmcomm/scripts/kvm_sleep.py (R9, R10).
 
 Run: python3 support/tests/test_kvm_sleep.py
-Needs no device and no aiofiles; the proc files are a dict.
+Needs no device; the proc files are a dict. kvm_sleep.py must import with
+only the standard library (the image ships no aiofiles).
 """
 import asyncio
 import importlib.util
@@ -10,15 +11,11 @@ import os
 import signal
 import sys
 import tempfile
-import types
+import threading
 import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "packages/kvmcomm/kvmcomm/scripts/kvm_sleep.py"
-
-# Stub aiofiles before import; the tests replace the helpers that use it.
-sys.modules.setdefault("aiofiles", types.ModuleType("aiofiles"))
-
 
 def load():
     argv = sys.argv
@@ -59,6 +56,60 @@ class FakeHw:
             raise OSError(5, "I/O error", path)
         self.writes.append((name, on))
         self.flags[name] = on
+
+
+class FileIoTests(unittest.IsolatedAsyncioTestCase):
+    """The real _read_text/_write_text helpers, against temp files."""
+
+    async def asyncSetUp(self):
+        self.mod = load()
+        self.dir = tempfile.TemporaryDirectory()
+
+    async def asyncTearDown(self):
+        self.dir.cleanup()
+
+    async def test_imports_without_aiofiles(self):
+        self.assertNotIn("aiofiles", sys.modules)
+
+    async def test_read_write_roundtrip(self):
+        path = os.path.join(self.dir.name, "power")
+        await self.mod._write_flag(path, True)
+        self.assertEqual(await self.mod._read_text(path), "1")
+        await self.mod._write_text(path, "on\n")
+        self.assertTrue(await self.mod._read_on(path))
+
+    async def test_write_error_on_close_propagates(self):
+        # A proc write the driver rejects fails on close(); the caller must
+        # see it so it never records a state the hardware did not take.
+        class RejectOnClose:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def write(self, data):
+                return len(data)
+
+            def __exit__(self, *exc):
+                raise OSError(22, "Invalid argument")
+
+        self.mod.open = RejectOnClose  # shadows the builtin for kvm_sleep only
+        try:
+            with self.assertRaises(OSError):
+                await self.mod._write_flag("/proc/lt6911_info/power", True)
+        finally:
+            del self.mod.open
+
+    async def test_io_runs_off_the_event_loop(self):
+        seen = []
+        real = self.mod._read_text_sync
+        self.mod._read_text_sync = lambda p: (seen.append(threading.get_ident()), "x")[1]
+        try:
+            await self.mod._read_text("/unused")
+        finally:
+            self.mod._read_text_sync = real
+        self.assertNotEqual(seen, [threading.get_ident()])
 
 
 class ControllerTests(unittest.IsolatedAsyncioTestCase):
