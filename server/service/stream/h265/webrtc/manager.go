@@ -94,11 +94,9 @@ func (m *WebRTCManager) StartMicStream(track *webrtc.TrackRemote) {
 func (m *WebRTCManager) sendVideoStream() {
 	defer atomic.StoreInt32(&m.videoSending, 0)
 
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	if err := stream.SetCPUAffinity(0); err != nil {
-		log.Warnf("failed to set video CPU affinity: %s", err)
-	}
+	// Not pinned: CPU 0 takes every device interrupt (Wi-Fi SDIO, the encoder,
+	// the display), and libkvm's encoder thread, created on the first read,
+	// would inherit the pin. Let the scheduler use both cores.
 
 	screen := common.GetScreen()
 	vision := common.GetKvmVision()
