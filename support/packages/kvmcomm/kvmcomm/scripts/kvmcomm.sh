@@ -90,7 +90,7 @@ start_kvm_vin() {
     echo "$(date) - Starting server -- kvm_vin" >>"$LOG_FILE"
 
     # stop kvm_ui if running
-    pkill -f kvm_ui >/dev/null 2>&1 || true
+    pkill -x kvm_ui >/dev/null 2>&1 || true
 
     if systemctl is-active --quiet nanokvm.service; then
         echo "$(date) - nanokvm.service is active, restarting..." >>"$LOG_FILE"
@@ -506,7 +506,9 @@ while true; do
     fi
     for target in "${TARGETS[@]}"; do
         exe_name=$(basename $(echo $target | awk '{print $1}'))
-        if ! pgrep -f "$exe_name" >/dev/null; then
+        # By process name: -f matched any command line containing it, so a
+        # shell viewing kvm_ui.log or a kvm_vin path hid a dead process.
+        if ! pgrep -x "$exe_name" >/dev/null; then
             echo "$(date) - Restart: $target" >>"$LOG_FILE"
             # $target >>"$LOG_DIR/${exe_name}.log" 2>&1 &
             # CHILD_PIDS["$exe_name"]=$!
