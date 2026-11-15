@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"NanoKVM-Server/proto"
 
@@ -644,9 +645,17 @@ func safeUpdateError(err error) string {
 	if err == nil {
 		return ""
 	}
+	const maxLen = 512
+	const marker = "…"
 	message := strings.TrimSpace(err.Error())
-	if len(message) > 512 {
-		return message[:512]
+	if len(message) <= maxLen {
+		return message
 	}
-	return message
+	// Keep the end: an updater's output ends with the step that failed, and
+	// its start (extraction and checksum lines) is the same on every run.
+	start := len(message) - (maxLen - len(marker))
+	for start < len(message) && !utf8.RuneStart(message[start]) {
+		start++
+	}
+	return marker + message[start:]
 }

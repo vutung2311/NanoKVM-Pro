@@ -2,8 +2,37 @@ package application
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+func TestSafeUpdateErrorKeepsTheFailingEnd(t *testing.T) {
+	if got := safeUpdateError(errors.New("  short failure \n")); got != "short failure" {
+		t.Fatalf("short error = %q", got)
+	}
+
+	checksums := strings.Repeat("overlay/kvmcomm/scripts/some_file.sh: OK\n", 40)
+	long := errors.New("firmware update failed: Verifying checksums...\n" + checksums +
+		"Flashing firmware/boot_signed.bin ...\ndd: error writing '/dev/mmcblk0p14': No space left on device")
+	got := safeUpdateError(long)
+	if len(got) > 512 {
+		t.Fatalf("len = %d, want <= 512", len(got))
+	}
+	if !strings.HasPrefix(got, "…") {
+		t.Fatalf("truncated error should start with a marker: %q", got[:20])
+	}
+	if !strings.HasSuffix(got, "No space left on device") {
+		t.Fatalf("failing step lost: %q", got[len(got)-40:])
+	}
+
+	// The cut must not split a multi-byte rune.
+	multibyte := errors.New(strings.Repeat("é", 400) + " end")
+	got = safeUpdateError(multibyte)
+	if !utf8.ValidString(got) || len(got) > 512 || !strings.HasSuffix(got, " end") {
+		t.Fatalf("multibyte cut: valid=%v len=%d", utf8.ValidString(got), len(got))
+	}
+}
 
 func TestCompleteFirmwareRebootSchedulingPersistsScheduledState(t *testing.T) {
 	previousRoot := updateJobRoot
