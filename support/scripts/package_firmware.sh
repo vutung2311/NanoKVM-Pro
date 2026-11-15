@@ -138,6 +138,16 @@ with zipfile.ZipFile('${BASE_AXP}') as z:
         install -D -m 644 "${sshd_dropin}" "${stage_dir}/overlay/etc/ssh/sshd_config.d/10-nanokvm.conf"
     fi
 
+    # Board init runs from kvm-board-init.service, pulled in by kvmcomm.service's
+    # Wants= rather than an enable symlink, which this archive cannot carry.
+    # Neither unit is a dpkg conffile, so a later kvmcomm upgrade replaces them
+    # without a prompt. The device reboots after the update, which loads them.
+    local unit
+    for unit in kvmcomm.service kvm-board-init.service; do
+        install -D -m 644 "${SUPPORT_DIR}/packages/kvmcomm/etc/systemd/system/${unit}" \
+            "${stage_dir}/overlay/etc/systemd/system/${unit}"
+    done
+
     # Strip host Python bytecode caches and ensure no symlinks exist (update_artifact.go rejects non-regular files)
     find "${stage_dir}/overlay" -type d -name "__pycache__" -prune -exec rm -rf {} +
     find "${stage_dir}/overlay" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
