@@ -31,6 +31,19 @@ if [ -f /etc/network/interfaces ]; then
     fi
 fi
 
+# kvmcomm points /bin/sh at bash (see kvmcomm.sh), but ifupdown's resolved
+# hooks are written for dash: they leave early with a top-level "return",
+# which dash treats as exit and bash rejects. The hook then fails with code 2,
+# ifup fails on lo, and networking.service fails at every boot. Make those
+# returns the exits dash takes them as. Idempotent: no top-level return left.
+for hook in /etc/network/if-up.d/resolved /etc/network/if-down.d/resolved; do
+    [ -f "$hook" ] || continue
+    if grep -qE '^[[:space:]]+return[[:space:]]*$' "$hook"; then
+        sed -i -E 's/^([[:space:]]+)return[[:space:]]*$/\1exit 0/' "$hook"
+        echo "kvmcomm: made ${hook} exit instead of return (/bin/sh is bash)"
+    fi
+done
+
 # Images built before the build scripts emptied /etc/machine-id shipped one
 # fixed id, shared by every device flashed from them (and with it the
 # systemd-derived eth0 MAC and DHCP identity). Give this device its own,
