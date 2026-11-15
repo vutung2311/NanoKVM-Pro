@@ -152,6 +152,15 @@ func createPeerConnection(iceServers []webrtc.ICEServer, mediaEngine *webrtc.Med
 		dtls.SRTP_AEAD_AES_128_GCM,
 		dtls.SRTP_AES128_CM_HMAC_SHA1_80,
 	)
+	// In DTLS-SRTP the DTLS server picks the profile. As the SDP answerer pion
+	// defaults to the DTLS client, so the browser chose AES-CM+HMAC-SHA1, which
+	// pion encrypts 16 bytes per call into BoringSSL: 154 us per 1200-byte
+	// packet on this A53 against 61 us for AES-GCM. Taking the server role
+	// (with pion/dtls >= 3.1, whose server prefers its own list) selects GCM,
+	// and clients without it still fall back to AES-CM.
+	if err := settingEngine.SetAnsweringDTLSRole(webrtc.DTLSRoleServer); err != nil {
+		return nil, err
+	}
 
 	apiOptions := []func(api *webrtc.API){
 		webrtc.WithSettingEngine(settingEngine),
