@@ -291,6 +291,24 @@ if [ -x /usr/sbin/ifplugd ]; then
     sed -i '/allow-hotplug eth0/d' /etc/network/interfaces 2>/dev/null || true
 fi
 
+# eth0 belongs to ifplugd, but the vendor initramfs writes the per-device MAC
+# into this file as "hwaddress ether <mac>" on every boot (replacing an existing
+# hwaddress line in place, else appending one). Give that line an eth0 stanza
+# to live in: without one ifupdown rejects the file and networking.service
+# fails. "manual" with no auto/allow-hotplug keeps ifupdown off eth0;
+# /kvmcomm/scripts/eth_mac.sh applies the MAC before ifplugd starts.
+cat > /etc/network/interfaces << 'IFACES_EOF'
+# interfaces(5) file used by ifup(8) and ifdown(8)
+auto lo
+iface lo inet loopback
+
+source /etc/network/interfaces.d/*
+
+# eth0 is managed by ifplugd; the initramfs fills in the MAC below.
+iface eth0 inet manual
+    hwaddress ether 00:00:00:00:00:00
+IFACES_EOF
+
 # No machine identity in the image. apt (systemd, dbus) created one in this
 # chroot; every device flashed from it would share it, and with it the
 # systemd-derived eth0 MAC and DHCP identity. An empty (not missing)

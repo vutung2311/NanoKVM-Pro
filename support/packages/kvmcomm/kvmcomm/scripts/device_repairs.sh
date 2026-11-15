@@ -6,6 +6,31 @@
 # a no-op once applied.
 set -u
 
+# The vendor initramfs appends "hwaddress ether <mac>" to this file on every
+# boot. Without an iface stanza before it ifupdown rejects the whole file
+# ("misplaced option") and networking.service fails. Move such orphaned lines
+# into an "iface eth0 inet manual" stanza; the initramfs then updates the
+# line in place. Idempotent: a file whose hwaddress already follows an iface
+# line is left alone.
+if [ -f /etc/network/interfaces ]; then
+    orphan_mac=$(awk '
+        /^[[:space:]]*iface[[:space:]]/ { seen = 1 }
+        !seen && /^[[:space:]]*hwaddress[[:space:]]+ether[[:space:]]/ { mac = $3 }
+        END { print mac }' /etc/network/interfaces)
+    if [ -n "$orphan_mac" ]; then
+        tmp_if=$(mktemp /etc/network/interfaces.XXXXXX)
+        awk '
+            /^[[:space:]]*iface[[:space:]]/ { seen = 1 }
+            !seen && /^[[:space:]]*hwaddress[[:space:]]+ether[[:space:]]/ { next }
+            { print }' /etc/network/interfaces >"$tmp_if"
+        printf '\n# eth0 is managed by ifplugd; the initramfs fills in the MAC below.\niface eth0 inet manual\n    hwaddress ether %s\n' \
+            "$orphan_mac" >>"$tmp_if"
+        chmod 644 "$tmp_if"
+        mv -f "$tmp_if" /etc/network/interfaces
+        echo "kvmcomm: moved the orphaned eth0 hwaddress line into an iface stanza"
+    fi
+fi
+
 # Images built before the build scripts emptied /etc/machine-id shipped one
 # fixed id, shared by every device flashed from them (and with it the
 # systemd-derived eth0 MAC and DHCP identity). Give this device its own,

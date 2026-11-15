@@ -148,6 +148,12 @@ with zipfile.ZipFile('${BASE_AXP}') as z:
             "${stage_dir}/overlay/etc/systemd/system/${unit}"
     done
 
+    # ifplugd drop-in that applies the per-device eth0 MAC (eth_mac.sh) before
+    # ifplugd raises the link. Like the units above it is not a conffile, and
+    # the reboot after the update loads it.
+    install -D -m 644 "${SUPPORT_DIR}/packages/kvmcomm/etc/systemd/system/ifplugd.service.d/10-kvmcomm-mac.conf" \
+        "${stage_dir}/overlay/etc/systemd/system/ifplugd.service.d/10-kvmcomm-mac.conf"
+
     # Strip host Python bytecode caches and ensure no symlinks exist (update_artifact.go rejects non-regular files)
     find "${stage_dir}/overlay" -type d -name "__pycache__" -prune -exec rm -rf {} +
     find "${stage_dir}/overlay" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
