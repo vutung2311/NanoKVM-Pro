@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"NanoKVM-Server/proto"
@@ -74,11 +75,34 @@ func (s *Service) IsPasswordUpdated(c *gin.Context) {
 		return
 	}
 
-	err = bcrypt.CompareHashAndPassword([]byte(account.Password), []byte("admin"))
-
 	rsp.OkRspWithData(c, &proto.IsPasswordUpdatedRsp{
-		IsUpdated: errors.Is(err, bcrypt.ErrMismatchedHashAndPassword),
+		IsUpdated: passwordChangedFromDefault(account.Password),
 	})
+}
+
+// defaultPasswordCheck remembers the answer for the last stored hash. The
+// desktop asks on every page load, and a bcrypt comparison at the default
+// cost takes hundreds of milliseconds of CPU on the A53, so it is computed once
+// per hash: a new password brings a new hash, and with it a new comparison.
+var defaultPasswordCheck struct {
+	sync.Mutex
+	hash    string
+	changed bool
+}
+
+func passwordChangedFromDefault(hash string) bool {
+	defaultPasswordCheck.Lock()
+	defer defaultPasswordCheck.Unlock()
+
+	if hash != "" && hash == defaultPasswordCheck.hash {
+		return defaultPasswordCheck.changed
+	}
+
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte("admin"))
+	changed := errors.Is(err, bcrypt.ErrMismatchedHashAndPassword)
+	defaultPasswordCheck.hash = hash
+	defaultPasswordCheck.changed = changed
+	return changed
 }
 
 func changeRootPassword(password string) error {
