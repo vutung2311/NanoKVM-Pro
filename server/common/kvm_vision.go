@@ -5,7 +5,68 @@ package common
 /*
 	#cgo CFLAGS: -I../include
 	#cgo LDFLAGS: -L../dl_lib -lkvm
+	#include <pthread.h>
+	#include <signal.h>
 	#include "kvm_vision.h"
+
+	// libkvm starts its encoder threads (VencTask-0, H26xProcThread,
+	// JencProcThread) from inside these calls, and they wait in the VENC
+	// driver's interruptible sleep. A signal landing in that sleep (the Go
+	// CPU profiler's SIGPROF reproduces it within seconds; any process-wide
+	// signal can do it) leaves the encoder rejecting every frame until the
+	// device reboots. Every call runs with signals blocked, so the threads it
+	// creates inherit that mask and its own waits are not interrupted.
+	// Faults stay unblocked so a crash in the library still reports.
+	static void kvmv_block_signals(sigset_t *old)
+	{
+		sigset_t all;
+		sigfillset(&all);
+		sigdelset(&all, SIGSEGV);
+		sigdelset(&all, SIGBUS);
+		sigdelset(&all, SIGFPE);
+		sigdelset(&all, SIGILL);
+		sigdelset(&all, SIGTRAP);
+		pthread_sigmask(SIG_BLOCK, &all, old);
+	}
+
+	#define KVMV_NOSIG(call) ({ \
+		sigset_t _old; \
+		kvmv_block_signals(&_old); \
+		__typeof__(call) _r = (call); \
+		pthread_sigmask(SIG_SETMASK, &_old, NULL); \
+		_r; \
+	})
+
+	static void nosig_kvmv_init(uint8_t debug)
+	{
+		sigset_t old;
+		kvmv_block_signals(&old);
+		kvmv_init(debug);
+		pthread_sigmask(SIG_SETMASK, &old, NULL);
+	}
+
+	static void nosig_kvmv_deinit(void)
+	{
+		sigset_t old;
+		kvmv_block_signals(&old);
+		kvmv_deinit();
+		pthread_sigmask(SIG_SETMASK, &old, NULL);
+	}
+
+	static int nosig_kvmv_read_img(uint16_t w, uint16_t h, uint8_t type, uint16_t param,
+		uint8_t **data, uint32_t *size)
+	{
+		return KVMV_NOSIG(kvmv_read_img(w, h, type, param, data, size));
+	}
+	static int nosig_kvmv_read_audio(uint8_t **data, uint32_t *size)
+	{
+		return KVMV_NOSIG(kvmv_read_audio(data, size));
+	}
+	static int nosig_kvmv_set_rate_control(uint8_t mode) { return KVMV_NOSIG(kvmv_set_rate_control(mode)); }
+	static int nosig_kvmv_set_fps(uint8_t fps) { return KVMV_NOSIG(kvmv_set_fps(fps)); }
+	static int nosig_kvmv_get_fps(void) { return KVMV_NOSIG(kvmv_get_fps()); }
+	static int nosig_kvmv_set_gop(uint8_t gop) { return KVMV_NOSIG(kvmv_set_gop(gop)); }
+	static int nosig_kvmv_hdmi_control(uint8_t en) { return KVMV_NOSIG(kvmv_hdmi_control(en)); }
 */
 import "C"
 import (
@@ -37,7 +98,7 @@ func GetKvmVision() *KvmVision {
 			logEnable = C.uint8_t(1)
 		}
 
-		C.kvmv_init(logEnable)
+		C.nosig_kvmv_init(logEnable)
 		log.Debugf("kvm vision initialized")
 	})
 
@@ -54,7 +115,7 @@ func (k *KvmVision) SetRateControl(mode uint8) int {
 		return -1
 	}
 
-	result := int(C.kvmv_set_rate_control(
+	result := int(C.nosig_kvmv_set_rate_control(
 		C.uint8_t(mode),
 	))
 	if result < 0 {
@@ -71,7 +132,7 @@ func (k *KvmVision) ReadMjpegInto(width uint16, height uint16, quality uint16, o
 		dataSize C.uint32_t
 	)
 
-	result = int(C.kvmv_read_img(
+	result = int(C.nosig_kvmv_read_img(
 		C.uint16_t(width),
 		C.uint16_t(height),
 		C.uint8_t(IMG_MJPEG_TYPE),
@@ -110,7 +171,7 @@ func (k *KvmVision) ReadH264Into(width uint16, height uint16, bitRate uint16, ou
 		dataSize C.uint32_t
 	)
 
-	result = int(C.kvmv_read_img(
+	result = int(C.nosig_kvmv_read_img(
 		C.uint16_t(width),
 		C.uint16_t(height),
 		C.uint8_t(IMG_H264_TYPE_SPS),
@@ -149,7 +210,7 @@ func (k *KvmVision) ReadH265Into(width uint16, height uint16, bitRate uint16, ou
 		dataSize C.uint32_t
 	)
 
-	result = int(C.kvmv_read_img(
+	result = int(C.nosig_kvmv_read_img(
 		C.uint16_t(width),
 		C.uint16_t(height),
 		C.uint8_t(IMG_H265_TYPE_SPS),
@@ -188,7 +249,7 @@ func (k *KvmVision) ReadAudioInto(outBuf *[]byte) (data []byte, result int) {
 		dataSize C.uint32_t
 	)
 
-	result = int(C.kvmv_read_audio(&kvmData, &dataSize))
+	result = int(C.nosig_kvmv_read_audio(&kvmData, &dataSize))
 	if result < 0 {
 		log.Errorf("failed to read audio: %d", result)
 		return nil, result
@@ -216,12 +277,12 @@ func (k *KvmVision) ReadAudio() (data []byte, result int) {
 
 func (k *KvmVision) SetFps(fps uint8) int {
 	_fps := C.uint8_t(fps)
-	result := C.kvmv_set_fps(_fps)
+	result := C.nosig_kvmv_set_fps(_fps)
 	return int(result)
 }
 
 func (k *KvmVision) GetFps() int {
-	return int(C.kvmv_get_fps())
+	return int(C.nosig_kvmv_get_fps())
 }
 
 func (k *KvmVision) SetHDMI(enable bool) int {
@@ -230,7 +291,7 @@ func (k *KvmVision) SetHDMI(enable bool) int {
 		hdmiEnable = C.uint8_t(1)
 	}
 
-	result := int(C.kvmv_hdmi_control(hdmiEnable))
+	result := int(C.nosig_kvmv_hdmi_control(hdmiEnable))
 	if result < 0 {
 		log.Errorf("failed to set hdmi to %t", enable)
 		return result
@@ -241,12 +302,12 @@ func (k *KvmVision) SetHDMI(enable bool) int {
 
 func (k *KvmVision) SetGop(gop uint8) int {
 	_gop := C.uint8_t(gop)
-	result := C.kvmv_set_gop(_gop)
+	result := C.nosig_kvmv_set_gop(_gop)
 	return int(result)
 }
 
 func (k *KvmVision) Close() {
-	C.kvmv_deinit()
+	C.nosig_kvmv_deinit()
 	log.Debugf("stop kvm vision...")
 }
 
@@ -260,7 +321,7 @@ func (k *KvmVision) readFrameTo(width, height uint16, imgType uint8, param uint1
 		dataSize C.uint32_t
 	)
 
-	result = int(C.kvmv_read_img(
+	result = int(C.nosig_kvmv_read_img(
 		C.uint16_t(width),
 		C.uint16_t(height),
 		C.uint8_t(imgType),
