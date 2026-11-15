@@ -86,6 +86,15 @@ stop_service_and_wait() {
     echo "$(date) - Warning: $svc_name still running after 10s" >>"$LOG_FILE"
 }
 
+# LCD preview shim (support/native/preview_on_demand): the capture-to-scaler
+# link for the LCD preview exists only while kvm_ui pulls preview frames.
+# kvm_vin and kvm_ui must both run with it or both without, so both launches
+# check the same file. Prints the env prefix for a launch in role $1.
+readonly PREVIEW_SHIM="${APP_ROOT}/lib/libpreview_on_demand.so"
+preview_shim_env() {
+    [ -f "$PREVIEW_SHIM" ] && echo "env KVM_PREVIEW_ROLE=$1 LD_PRELOAD=$PREVIEW_SHIM"
+}
+
 start_kvm_vin() {
     echo "$(date) - Starting server -- kvm_vin" >>"$LOG_FILE"
 
@@ -95,17 +104,17 @@ start_kvm_vin() {
     if systemctl is-active --quiet nanokvm.service; then
         echo "$(date) - nanokvm.service is active, restarting..." >>"$LOG_FILE"
         stop_service_and_wait nanokvm.service
-        "${APP_ROOT}/vin/kvm_vin" &
+        $(preview_shim_env vin) "${APP_ROOT}/vin/kvm_vin" &
         sleep 0.5
         systemctl start nanokvm.service
     elif systemctl is-active --quiet kvmd.service; then
         echo "$(date) - kvmd.service is active, restarting..." >>"$LOG_FILE"
         stop_service_and_wait kvmd.service
-        "${APP_ROOT}/vin/kvm_vin" &
+        $(preview_shim_env vin) "${APP_ROOT}/vin/kvm_vin" &
         sleep 0.5
         systemctl start kvmd.service
     else
-        "${APP_ROOT}/vin/kvm_vin" &
+        $(preview_shim_env vin) "${APP_ROOT}/vin/kvm_vin" &
     fi
 }
 
@@ -523,7 +532,7 @@ while true; do
                 "$SCRIPTS_ROOT"/gpio_write.sh 76 1 >>/dev/null 2>&1
                 "$SCRIPTS_ROOT"/gpio_write.sh 76 0 >>/dev/null 2>&1
                 "$SCRIPTS_ROOT"/gpio_write.sh 76 1 >>/dev/null 2>&1
-                $target >>"$LOG_DIR/${exe_name}.log" 2>&1 &
+                $(preview_shim_env ui) $target >>"$LOG_DIR/${exe_name}.log" 2>&1 &
             else
                 $target >>"$LOG_DIR/${exe_name}.log" 2>&1 &
             fi

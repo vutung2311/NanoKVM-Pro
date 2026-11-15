@@ -125,6 +125,16 @@ with zipfile.ZipFile('${BASE_AXP}') as z:
         cp -af "${SUPPORT_DIR}/packages/nanokvmpro/kvmapp/cua/." "${stage_dir}/overlay/kvmapp/cua/"
     fi
 
+    # The LCD preview shim, built and copied into the package tree by 'make deb'
+    # (firmware-pkg depends on it). kvmcomm.sh preloads it into kvm_vin and kvm_ui.
+    local preview_shim="${SUPPORT_DIR}/packages/kvmcomm/kvmcomm/lib/libpreview_on_demand.so"
+    if [[ ! -f "${preview_shim}" ]]; then
+        echo -e "${RED}[✗] ${preview_shim} missing; run 'make deb' first.${RESET}" >&2
+        rm -rf "${stage_dir}"
+        exit 1
+    fi
+    install -D -m 644 "${preview_shim}" "${stage_dir}/overlay/kvmcomm/lib/libpreview_on_demand.so"
+
     # Stage KVMComm scripts directly from package source tree
     if [[ -d "${SUPPORT_DIR}/packages/kvmcomm/kvmcomm/scripts" ]]; then
         cp -af "${SUPPORT_DIR}/packages/kvmcomm/kvmcomm/scripts/." "${stage_dir}/overlay/kvmcomm/scripts/"

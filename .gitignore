@@ -39,6 +39,7 @@ support/base_firmware/nanokvm_pro_*
 !support/blobs/**
 mount_point/
 support/packages/nanokvmpro/kvmapp/server/NanoKVM-Server
+support/packages/kvmcomm/kvmcomm/lib/libpreview_on_demand.so
 support/packages/nanokvmpro/kvmapp/server/web/
 images/
 

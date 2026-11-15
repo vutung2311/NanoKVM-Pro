@@ -45,6 +45,9 @@ BUILD_PYTHON    ?= $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),$(shell comman
 AXP2IMG         ?= $(if $(wildcard $(BUILD_IMAGE_DIR)/axp2img.py),$(BUILD_PYTHON) $(BUILD_IMAGE_DIR)/axp2img.py,$(shell command -v axp2img 2>/dev/null || ([ -x $(VENV_DIR)/bin/axp2img ] && echo $(VENV_DIR)/bin/axp2img) || echo axp2img))
 PNPM            ?= $(shell command -v pnpm 2>/dev/null || (command -v npx >/dev/null 2>&1 && echo "npx -y pnpm") || echo pnpm)
 TOOLCHAIN_INI   ?= $(SUPPORT_DIR)/toolchains/toolchain.ini
+CROSS_CC        ?= $(shell $(BUILD_PYTHON) $(SUPPORT_DIR)/scripts/getconfig.py $(TOOLCHAIN_INI) toolchain cc 2>/dev/null)
+PREVIEW_SHIM_SRC ?= $(SUPPORT_DIR)/native/preview_on_demand/preview_on_demand.c
+PREVIEW_SHIM    ?= $(DIST_DIR)/native/libpreview_on_demand.so
 
 # Image Compression Configuration (Multi-Threaded XZ)
 XZ_THREADS          ?= 0
@@ -87,7 +90,7 @@ RESET := \033[0m
 # ------------------------------------------------------------------------------
 # Phony Targets
 # ------------------------------------------------------------------------------
-.PHONY: all help check-tools setup-tooling fetch-base build server client web overlay deb app-pkg web-pkg rootfs image-axp build-axp image-raw image-img image release deploy deploy-all clean distclean flash-info check-upstream rebase-upstream sync-upstream firmware-pkg update-pkg firmware-flash update-flash kernel-check kernel-flash-b kernel-boot-a kernel-boot-b
+.PHONY: all help check-tools setup-tooling fetch-base build server client web native overlay deb app-pkg web-pkg rootfs image-axp build-axp image-raw image-img image release deploy deploy-all clean distclean flash-info check-upstream rebase-upstream sync-upstream firmware-pkg update-pkg firmware-flash update-flash kernel-check kernel-flash-b kernel-boot-a kernel-boot-b
 
 # Default Target
 all: help
@@ -156,6 +159,19 @@ server: $(TOOLCHAIN_INI)
 	@cd $(SERVER_DIR) && VERSION="$(VERSION)" ./build.sh
 	@echo -e "$(GREEN)[✓] NanoKVM-Server built successfully: $(SERVER_DIR)/NanoKVM-Server$(RESET)"
 
+## Cross-compile the LCD preview shim preloaded into kvm_vin and kvm_ui
+native: $(PREVIEW_SHIM)
+
+$(PREVIEW_SHIM): $(PREVIEW_SHIM_SRC) $(TOOLCHAIN_INI)
+	@echo -e "$(CYAN)==> Building libpreview_on_demand.so (ARM64 toolchain)...$(RESET)"
+	@if [ -z "$(CROSS_CC)" ] || ! command -v "$(CROSS_CC)" >/dev/null 2>&1; then \
+		echo -e "$(RED)Error: cross compiler not found ($(CROSS_CC)); run 'make setup-tooling'.$(RESET)"; \
+		exit 1; \
+	fi
+	@mkdir -p $(dir $@)
+	@$(CROSS_CC) -O2 -Wall -Wextra -Werror -fPIC -shared -o $@ $< -ldl -lpthread
+	@echo -e "$(GREEN)[✓] Preview shim built: $@$(RESET)"
+
 $(TOOLCHAIN_INI):
 	@echo -e "$(YELLOW)[!] ARM64 cross-toolchain configuration not found ($(TOOLCHAIN_INI)).$(RESET)"
 	@echo -e "$(CYAN)==> Configuring cross-toolchain automatically...$(RESET)"
@@ -185,7 +201,7 @@ web:
 overlay: deb
 
 ## Build ARM64 Debian packages (nanokvmpro & kvmcomm) directly from package sources
-deb: server client
+deb: server client native
 	@if ! command -v dpkg-deb >/dev/null 2>&1; then \
 		echo -e "$(RED)Error: dpkg-deb command not found.$(RESET)"; \
 		echo -e "$(YELLOW)Please install 'dpkg' (Arch: pacman -S dpkg, Debian: apt install dpkg-dev, Fedora: dnf install dpkg-dev)$(RESET)"; \
@@ -204,6 +220,7 @@ deb: server client
 	@cp -f $(APP_DIR)/nanokvmpro_$(VERSION)_arm64.deb $(DIST_DIR)/
 	@echo -e "$(GREEN)[✓] Debian package ready: $(DIST_DIR)/nanokvmpro_$(VERSION)_arm64.deb$(RESET)"
 	@echo -e "$(CYAN)==> Building Debian package: kvmcomm_$(VERSION)_arm64.deb...$(RESET)"
+	@install -D -m 644 $(PREVIEW_SHIM) $(SUPPORT_DIR)/packages/kvmcomm/kvmcomm/lib/libpreview_on_demand.so
 	@chmod -R 755 $(SUPPORT_DIR)/packages/kvmcomm/kvmcomm/scripts/*.sh 2>/dev/null || true
 	@chmod -R 755 $(SUPPORT_DIR)/packages/kvmcomm/kvmcomm/scripts/*.py 2>/dev/null || true
 	@dpkg-deb --root-owner-group -b $(SUPPORT_DIR)/packages/kvmcomm $(APP_DIR)/kvmcomm_$(VERSION)_arm64.deb
