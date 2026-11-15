@@ -22,6 +22,10 @@ UBUNTU_TAR_CACHE="${REPO_ROOT}/support/base_firmware/ubuntu-base-22.04-base-arm6
 CACHED_ROOTFS="${REPO_ROOT}/support/base_firmware/ubuntu_rootfs.ext4"
 
 OUTPUT_ROOTFS="${1:-${DIST_DIR}/ubuntu_rootfs.ext4}"
+# Hash of this build's inputs, taken before building: an input edited mid-build
+# then leaves the result stale rather than wrongly current. Written next to the
+# output and the cache as <image>.inputs-sha; the Makefile rebuilds on mismatch.
+INPUTS_SHA="$(bash "${SCRIPT_DIR}/rootfs_inputs_sha.sh")"
 WORK_DIR="/var/tmp/nanokvm_rootfs_build_$$"
 
 # Colors
@@ -401,12 +405,16 @@ ${PRIV_CMD} resize2fs "${RAW_IMG}" 4500M
 mkdir -p "$(dirname "${OUTPUT_ROOTFS}")" "$(dirname "${CACHED_ROOTFS}")"
 mv -f "${RAW_IMG}" "${OUTPUT_ROOTFS}"
 chown "${REAL_UID}:${REAL_GID}" "${OUTPUT_ROOTFS}"
+echo "${INPUTS_SHA}" >"${OUTPUT_ROOTFS}.inputs-sha"
+chown "${REAL_UID}:${REAL_GID}" "${OUTPUT_ROOTFS}.inputs-sha"
 
 # Keep persistent rootfs cache updated for future builds
 if [[ "$(realpath "${OUTPUT_ROOTFS}")" != "$(realpath "${CACHED_ROOTFS}" 2>/dev/null || echo "")" ]]; then
     echo -e "${CYAN}[+] Updating persistent rootfs cache at ${CACHED_ROOTFS}...${RESET}"
     cp --sparse=always -f "${OUTPUT_ROOTFS}" "${CACHED_ROOTFS}"
     chown "${REAL_UID}:${REAL_GID}" "${CACHED_ROOTFS}" 2>/dev/null || true
+    cp -f "${OUTPUT_ROOTFS}.inputs-sha" "${CACHED_ROOTFS}.inputs-sha"
+    chown "${REAL_UID}:${REAL_GID}" "${CACHED_ROOTFS}.inputs-sha" 2>/dev/null || true
 fi
 
 echo -e "${GREEN}==================================================================${RESET}"

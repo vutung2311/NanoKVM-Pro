@@ -368,13 +368,23 @@ build-axp: image-axp
 
 $(OUTPUT_AXP): deb
 	@echo -e "$(CYAN)==> Packaging custom AXP image using build_image.py...$(RESET)"
-	@if [ ! -f "$(BASE_ROOTFS)" ] && [ -f "$(CACHED_ROOTFS)" ]; then \
+	@# Use a base rootfs only if it was built from the current build_rootfs.sh
+	@# and rootfs blobs (its .inputs-sha stamp); otherwise rebuild it.
+	@want=$$(bash "$(SUPPORT_DIR)/scripts/rootfs_inputs_sha.sh"); \
+	current() { [ -f "$$1" ] && [ -f "$$1.inputs-sha" ] && [ "$$(cat "$$1.inputs-sha")" = "$$want" ]; }; \
+	if current "$(BASE_ROOTFS)"; then \
+		echo -e "$(CYAN)==> Base rootfs is current ($(BASE_ROOTFS)).$(RESET)"; \
+	elif current "$(CACHED_ROOTFS)"; then \
 		echo -e "$(CYAN)==> Staging base rootfs from persistent cache ($(CACHED_ROOTFS))...$(RESET)"; \
 		cp --sparse=always -f "$(CACHED_ROOTFS)" "$(BASE_ROOTFS)"; \
-	fi
-	@if [ ! -f "$(BASE_ROOTFS)" ]; then \
-		echo -e "$(CYAN)==> Base rootfs not found in cache. Building rootfs from official Ubuntu base...$(RESET)"; \
-		$(MAKE) rootfs; \
+		cp -f "$(CACHED_ROOTFS).inputs-sha" "$(BASE_ROOTFS).inputs-sha"; \
+	else \
+		if [ -f "$(BASE_ROOTFS)" ] || [ -f "$(CACHED_ROOTFS)" ]; then \
+			echo -e "$(YELLOW)==> Cached rootfs is stale (build_rootfs.sh or its inputs changed since it was built). Rebuilding...$(RESET)"; \
+		else \
+			echo -e "$(CYAN)==> Base rootfs not found. Building rootfs from official Ubuntu base...$(RESET)"; \
+		fi; \
+		$(MAKE) rootfs || exit 1; \
 	fi
 	@if ! command -v qemu-aarch64-static >/dev/null 2>&1 && [ ! -x /usr/bin/qemu-aarch64-static ]; then \
 		echo -e "$(RED)Error: qemu-aarch64-static not found.$(RESET)"; \

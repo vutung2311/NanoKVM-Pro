@@ -31,6 +31,7 @@ support/base_firmware/axp_temp/
 support/base_firmware/nanokvm_pro_*
 *.deb
 *.ext4
+*.ext4.inputs-sha
 *.fat32
 *.img
 *.img.xz
