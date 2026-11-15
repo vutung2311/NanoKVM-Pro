@@ -185,6 +185,17 @@ EOF
 # -----------------------------------------------------------------------------
 # Configuration & Build Steps
 # -----------------------------------------------------------------------------
+DEFCONFIG_PATH="${LINUX_SRC}/arch/${ARCH}/configs/${DEFCONFIG}"
+# sha256 of the defconfig a .config was generated from. Kbuild treats .config
+# as the source of truth, so without this a defconfig change never reaches a
+# tree that already has a .config (a content hash, not mtime: git checkout
+# rewrites mtimes).
+CONFIG_STAMP="${LINUX_SRC}/.config.defconfig-sha"
+
+defconfig_sha() {
+    sha256sum "${DEFCONFIG_PATH}" | cut -d' ' -f1
+}
+
 configure_kernel() {
     echo -e "${CYAN}==> Generating kernel .config from ${DEFCONFIG}...${RESET}"
     make -C "${LINUX_SRC}" \
@@ -203,6 +214,37 @@ configure_kernel() {
     else
         echo "CONFIG_INITRAMFS_SOURCE=\"${KERNEL_TOOLS_DIR}/initramfs_rootfs.cpio\"" >> "${LINUX_SRC}/.config"
     fi
+    defconfig_sha > "${CONFIG_STAMP}"
+}
+
+# Use the existing .config only if it was generated from the current defconfig.
+# menuconfig edits survive until the defconfig itself changes.
+ensure_config() {
+    if [[ ! -f "${LINUX_SRC}/.config" ]]; then
+        configure_kernel
+    elif [[ ! -f "${CONFIG_STAMP}" ]] || [[ "$(cat "${CONFIG_STAMP}")" != "$(defconfig_sha)" ]]; then
+        echo -e "${YELLOW}[!] ${DEFCONFIG} changed since .config was generated; regenerating.${RESET}"
+        configure_kernel
+    fi
+}
+
+# Fail fast if .config disagrees with the defconfig on options a stale config
+# has silently reverted before (tickless idle, the schedutil governor).
+check_config_matches_defconfig() {
+    local opt want have bad=0
+    for opt in CONFIG_NO_HZ_IDLE CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL; do
+        want=$(grep -E "^(${opt}=|# ${opt} is not set)" "${DEFCONFIG_PATH}" | head -1)
+        have=$(grep -E "^(${opt}=|# ${opt} is not set)" "${LINUX_SRC}/.config" | head -1)
+        [[ -z "${want}" ]] && continue
+        if [[ "${want}" != "${have}" ]]; then
+            echo -e "${RED}Error: .config has '${have:-<unset>}' but ${DEFCONFIG} has '${want}'.${RESET}" >&2
+            bad=1
+        fi
+    done
+    if [[ ${bad} -ne 0 ]]; then
+        echo -e "${YELLOW}Remove ${LINUX_SRC}/.config to regenerate it, or save a deliberate change with 'make savedefconfig' into ${DEFCONFIG}.${RESET}" >&2
+        return 1
+    fi
 }
 
 run_menuconfig() {
@@ -211,9 +253,7 @@ run_menuconfig() {
     ensure_initramfs
     ensure_dts_reserve_mem
 
-    if [[ ! -f "${LINUX_SRC}/.config" ]]; then
-        configure_kernel
-    fi
+    ensure_config
 
     echo -e "${CYAN}==> Opening kernel menuconfig...${RESET}"
     make -C "${LINUX_SRC}" \
@@ -227,6 +267,8 @@ run_menuconfig() {
     # Re-verify initramfs setting after menuconfig exits
     sed -i "s|^CONFIG_INITRAMFS_SOURCE=.*|CONFIG_INITRAMFS_SOURCE=\"${KERNEL_TOOLS_DIR}/initramfs_rootfs.cpio\"|" "${LINUX_SRC}/.config"
     echo -e "${GREEN}[✓] Kernel configuration updated.${RESET}"
+    echo -e "${YELLOW}[!] This edit lives only in .config and is replaced the next time ${DEFCONFIG} changes.${RESET}"
+    echo -e "${YELLOW}    To keep it, run 'make savedefconfig' and copy the result over ${DEFCONFIG_PATH}.${RESET}"
 }
 
 compile_kernel() {
@@ -235,9 +277,8 @@ compile_kernel() {
     ensure_initramfs
     ensure_dts_reserve_mem
 
-    if [[ ! -f "${LINUX_SRC}/.config" ]]; then
-        configure_kernel
-    fi
+    ensure_config
+    check_config_matches_defconfig
 
     local jobs=$(nproc)
     echo -e "${CYAN}==> Compiling Device Tree (${PROJECT}.dtb)...${RESET}"
