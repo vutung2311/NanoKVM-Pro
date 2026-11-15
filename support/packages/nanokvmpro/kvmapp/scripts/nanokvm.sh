@@ -7,10 +7,6 @@ readonly LOG_FILE="${LOG_DIR}/nanokvmd.log"
 readonly TARGETS=(
     "${APP_ROOT}/server/NanoKVM-Server"
 )
-readonly HTTPS_CRT=(
-    "/etc/kvm/server.key"
-    "/etc/kvm/server.crt"
-)
 
 declare -A CHILD_PIDS=()
 declare -A FAIL_COUNTS=()
@@ -45,60 +41,56 @@ graceful_stop() {
     exit 0
 }
 
+# The pair is usable: both parse, and the key is the certificate's (any key
+# type, so a user's own ECDSA or RSA certificate passes).
+https_crt_valid() {
+    local crt=$1 key=$2 crt_pub key_pub
+    crt_pub=$(openssl x509 -in "$crt" -noout -pubkey 2>/dev/null) || return 1
+    key_pub=$(openssl pkey -in "$key" -pubout 2>/dev/null) || return 1
+    [ -n "$crt_pub" ] && [ "$crt_pub" = "$key_pub" ]
+}
+
+# The RSA certificate this script and postinst used to generate: self-signed
+# for CN=localhost. ECDSA replaces it once; RSA-2048 signing costs 13.7 ms per
+# TLS handshake on this CPU, P-256 0.4 ms. Any other certificate is the user's.
+https_crt_is_old_default() {
+    local crt=$1
+    openssl x509 -in "$crt" -noout -text 2>/dev/null | grep -q "Public Key Algorithm: rsaEncryption" || return 1
+    [ "$(openssl x509 -in "$crt" -noout -subject -nameopt RFC2253 2>/dev/null)" = "subject=CN=localhost" ] &&
+        [ "$(openssl x509 -in "$crt" -noout -issuer -nameopt RFC2253 2>/dev/null)" = "issuer=CN=localhost" ]
+}
+
 makesure_https_crt() {
-    local need_delete=0
+    local key=/etc/kvm/server.key crt=/etc/kvm/server.crt reason=""
 
     echo "$(date) - Starting certificate verification..." >>"$LOG_FILE"
 
-    for cert in "${HTTPS_CRT[@]}"; do
-        if [ ! -f "$cert" ]; then
-            echo "$(date) - Certificate file not found: $cert" >>"$LOG_FILE"
-            need_delete=1
-        fi
-    done
-
-    if [ $need_delete -eq 0 ]; then
-        if ! openssl x509 -in /etc/kvm/server.crt -noout -text >/dev/null 2>&1; then
-            echo "$(date) - Invalid certificate: /etc/kvm/server.crt" >>"$LOG_FILE"
-            need_delete=1
-        fi
-
-        if ! openssl rsa -in /etc/kvm/server.key -check -noout >/dev/null 2>&1; then
-            echo "$(date) - Invalid private key: /etc/kvm/server.key" >>"$LOG_FILE"
-            need_delete=1
-        fi
-
-        if [ $need_delete -eq 0 ]; then
-            crt_mod=$(openssl x509 -noout -modulus -in /etc/kvm/server.crt 2>/dev/null | openssl md5)
-            key_mod=$(openssl rsa -noout -modulus -in /etc/kvm/server.key 2>/dev/null | openssl md5)
-            if [ "$crt_mod" != "$key_mod" ]; then
-                echo "$(date) - Certificate and private key do not match" >>"$LOG_FILE"
-                need_delete=1
-            fi
-        fi
+    if [ ! -f "$key" ] || [ ! -f "$crt" ]; then
+        reason="is missing"
+    elif ! https_crt_valid "$crt" "$key"; then
+        reason="is invalid, or the key does not match it"
+    elif https_crt_is_old_default "$crt"; then
+        reason="is the old self-signed RSA default"
     fi
 
-    if [ $need_delete -eq 1 ]; then
-        echo "$(date) - Invalid or missing certificates, initiating cleanup..." >>"$LOG_FILE"
+    if [ -z "$reason" ]; then
+        echo "$(date) - All certificates valid" >>"$LOG_FILE"
+        return 0
+    fi
 
-        for cert in "${HTTPS_CRT[@]}"; do
-            if [ -e "$cert" ]; then
-                rm -f "$cert" && echo "$(date) - Deleted: $cert" >>"$LOG_FILE"
-            fi
-        done
-
-        echo "$(date) - Generating new SSL certificates..." >>"$LOG_FILE"
-        mkdir -p /etc/kvm
-        openssl req -x509 -newkey rsa:2048 \
-            -keyout /etc/kvm/server.key \
-            -out /etc/kvm/server.crt \
-            -days 3650 -nodes -subj "/CN=localhost" 2>&1 >>"$LOG_FILE"
-        chmod 600 /etc/kvm/server.key
-        chmod 644 /etc/kvm/server.crt
+    echo "$(date) - Certificate $reason: generating an ECDSA P-256 one" >>"$LOG_FILE"
+    mkdir -p /etc/kvm
+    rm -f "$key" "$crt"
+    # umask: the key is never readable by others, not even before the chmod.
+    if (umask 077; openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout "$key" -out "$crt" \
+        -days 3650 -nodes -subj "/CN=localhost") >>"$LOG_FILE" 2>&1; then
+        chmod 600 "$key"
+        chmod 644 "$crt"
         sync
         echo "$(date) - SSL certificates generated successfully" >>"$LOG_FILE"
     else
-        echo "$(date) - All certificates valid" >>"$LOG_FILE"
+        echo "$(date) - Error: SSL certificate generation failed" >>"$LOG_FILE"
     fi
 }
 

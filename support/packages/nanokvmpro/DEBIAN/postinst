@@ -60,7 +60,7 @@ done
 # flashed from the image. nanokvm.sh generates it on first start instead.
 if [ "$(stat -c %d:%i /)" == "$(stat -c %d:%i /proc/1/root/.)" ] && \
    { [ ! -f /etc/kvm/server.crt ] || [ ! -f /etc/kvm/server.key ]; }; then
-    (umask 077; openssl req -x509 -newkey rsa:2048 \
+    (umask 077; openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
         -keyout /etc/kvm/server.key \
         -out /etc/kvm/server.crt \
         -days 3650 -nodes -subj "/CN=localhost" >/dev/null 2>&1)

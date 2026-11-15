@@ -83,9 +83,10 @@ Both NanoKVM and PiKVM share the same SSL certificates located in `/etc/kvm/`:
 * `/etc/kvm/server.crt` (Permissions: `0644`)
 * `/etc/kvm/server.key` (Permissions: `0600`)
 
-### Pre-bundling Requirement
-* Default self-signed certificates must be pre-packaged in `support/packages/nanokvmpro/etc/kvm/`.
-* **Hazard:** Generating RSA 2048-bit keys on AX630C takes 10-15 seconds of 100% CPU. If certs are missing at boot, `NanoKVM-Server` will race and fail with `HTTPS server failed: open /etc/kvm/server.crt: no such file or directory`.
+### Per-device Generation
+* Never pre-package a certificate: a key in the package or image is shared by every device. `postinst` (outside an image-build chroot) and `nanokvm.sh` (at every start, before the server) generate a per-device one.
+* The generated certificate is self-signed ECDSA P-256 for `CN=localhost`. Generation takes milliseconds, and signing a TLS handshake costs 0.4 ms on the AX630C against 13.7 ms for RSA-2048.
+* `nanokvm.sh` accepts any valid pair of any key type, so a user's own certificate is kept. It replaces only a missing or mismatched pair, and once the old self-signed `CN=localhost` RSA default.
 * When PiKVM initializes, `pikvm_init.sh` symlinks `/etc/kvm/server.*` directly into `/etc/kvmd/nginx/ssl/`.
 
 ---
