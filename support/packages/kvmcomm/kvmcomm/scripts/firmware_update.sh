@@ -70,11 +70,22 @@ flash_image() {
 
         echo "Flashing $file ..."
 
+        # Quiet on success (dd status=progress is noisy), but on failure show
+        # why: under set -e a silent failure ended the update with no reason.
+        local out
         if [ -f "$script" ]; then
-            "$script" "$file" > /dev/null 2>&1
+            if ! out=$("$script" "$file" 2>&1); then
+                printf '%s\n' "$out" | tail -n 5
+                echo "Flashing $file failed ($script)"
+                exit 1
+            fi
         else
             for part in "${partitions[@]}"; do
-                dd if="$file" of="$part" bs=4K conv=notrunc > /dev/null 2>&1
+                if ! out=$(dd if="$file" of="$part" bs=4K conv=notrunc 2>&1); then
+                    printf '%s\n' "$out" | tail -n 5
+                    echo "Flashing $file to $part failed"
+                    exit 1
+                fi
             done
         fi
     fi
