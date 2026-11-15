@@ -106,13 +106,11 @@ func (m *WebRTCManager) sendVideoStream() {
 	vision := common.GetKvmVision()
 	m.updateStatus(0)
 
-	ticker := stream.NewPollTicker()
-	defer ticker.Stop()
+	pacer := stream.NewReadPacer()
 
 	startTime := time.Now()
 
-	for range ticker.C() {
-		ticker.Refresh()
+	for {
 		if m.GetClientCount() == 0 {
 			log.Debugf("stop sending h264 stream")
 			return
@@ -120,17 +118,21 @@ func (m *WebRTCManager) sendVideoStream() {
 
 		if vision.StreamType != common.STREAM_TYPE_H264_WEBRTC {
 			m.updateStatus(-4)
+			pacer.Idle()
 			continue
 		}
 
 		params := screen.Check()
+		readStart := time.Now()
 		data, result := vision.ReadH264(params.Width, params.Height, params.BitRate)
 		m.updateStatus(result)
 
 		if result < 0 || len(data) == 0 {
+			pacer.Missed(time.Since(readStart))
 			continue
 		}
 
+		pacer.Got()
 		timestamp := time.Since(startTime)
 		startTime = time.Now()
 

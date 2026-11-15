@@ -63,23 +63,23 @@ func (s *Streamer) run() {
 	vision := common.GetKvmVision()
 	screen := common.GetScreen()
 
-	ticker := stream.NewPollTicker()
-	defer ticker.Stop()
+	pacer := stream.NewReadPacer()
 
-	for range ticker.C() {
-		ticker.Refresh()
+	for {
 		if s.getClientCount() == 0 {
 			log.Debug("mjpeg stream stopped due to no clients")
 			return
 		}
 
 		if vision.StreamType != common.STREAM_TYPE_MJPEG {
+			pacer.Idle()
 			continue
 		}
 
 		params := screen.Check()
 		// One copy: the JPEG goes straight into its multipart part.
 		var msg *fanout.Msg
+		readStart := time.Now()
 		n, result := vision.ReadMjpegTo(params.Width, params.Height, params.Quality, func(n int) []byte {
 			var body []byte
 			msg, body = newPart(n)
@@ -89,8 +89,10 @@ func (s *Streamer) run() {
 			if msg != nil {
 				msg.Release()
 			}
+			pacer.Missed(time.Since(readStart))
 			continue
 		}
+		pacer.Got()
 		s.hub.Broadcast(msg)
 
 		stream.GetFrameRateCounter().Update()

@@ -58,67 +58,52 @@ func (f *FrameRateCounter) GetFPS() int32 {
 	return f.fps
 }
 
-func GetStreamTickerDuration() time.Duration {
-	screen := common.GetScreen()
-	targetFps := int(screen.Snapshot().FPS)
-	if targetFps <= 0 {
-		if hwFps := common.GetKvmVision().GetFps(); hwFps > 0 && hwFps <= 120 {
-			targetFps = hwFps
-		} else {
-			targetFps = 60
-		}
-	}
+// Read pacing for the video loops.
+//
+// kvmv_read_img blocks in AX_VENC_GetStream until the encoder has a frame
+// (timeout 300 ms), so the loops read back to back and collect each frame the
+// moment it is encoded. Polling on a timer instead left finished frames in the
+// encoder's 2-deep output FIFO until the next tick, which backed up its
+// 1-deep input FIFO and dropped input frames. The encoder's own output rate
+// (kvmv_set_fps) paces the stream.
+const (
+	// A read that returns no frame faster than this did not block, so the
+	// loop backs off rather than spinning on it.
+	readFastFail   = 2 * time.Millisecond
+	readBackoffMin = 5 * time.Millisecond
+	readBackoffMax = 100 * time.Millisecond
+	// Wait used while the stream is not the active codec.
+	readIdleWait = 20 * time.Millisecond
+)
 
-	pollRate := (targetFps * 5) / 4
-	if pollRate < 40 {
-		pollRate = 40
-	} else if pollRate > 120 {
-		pollRate = 120
-	}
-
-	return time.Second / time.Duration(pollRate)
+// ReadPacer paces one video loop's encoder reads.
+type ReadPacer struct {
+	backoff time.Duration
+	sleep   func(time.Duration)
 }
 
-// pollRefreshInterval is how often a running stream re-reads its target fps,
-// so an fps change (setting or HDMI input) applies without reconnecting.
-const pollRefreshInterval = 2 * time.Second
-
-// PollTicker paces a stream's encoder reads at GetStreamTickerDuration and
-// follows changes to it while the stream runs.
-type PollTicker struct {
-	t       *time.Ticker
-	d       time.Duration
-	checked time.Time
-	compute func() time.Duration
+func NewReadPacer() *ReadPacer {
+	return &ReadPacer{sleep: time.Sleep}
 }
 
-func NewPollTicker() *PollTicker {
-	return newPollTicker(GetStreamTickerDuration)
-}
+// Got records a read that returned a frame; the next read follows at once.
+func (p *ReadPacer) Got() { p.backoff = 0 }
 
-func newPollTicker(compute func() time.Duration) *PollTicker {
-	d := compute()
-	return &PollTicker{t: time.NewTicker(d), d: d, checked: time.Now(), compute: compute}
-}
-
-// C is the tick channel; it stays the same across Refresh.
-func (p *PollTicker) C() <-chan time.Time { return p.t.C }
-
-// Refresh re-reads the target rate at most every pollRefreshInterval and
-// resets the ticker if it changed. Call it from the loop that reads C.
-func (p *PollTicker) Refresh() {
-	now := time.Now()
-	if now.Sub(p.checked) < pollRefreshInterval {
+// Missed records a read that returned no frame after took. A read that
+// blocked (the encoder timed out) is already paced; one that failed at once
+// backs off, doubling up to readBackoffMax.
+func (p *ReadPacer) Missed(took time.Duration) {
+	if took >= readFastFail {
+		p.backoff = 0
 		return
 	}
-	p.checked = now
-	if d := p.compute(); d > 0 && d != p.d {
-		p.d = d
-		p.t.Reset(d)
+	if p.backoff == 0 {
+		p.backoff = readBackoffMin
+	} else {
+		p.backoff = min(p.backoff*2, readBackoffMax)
 	}
+	p.sleep(p.backoff)
 }
 
-// Interval returns the current tick interval.
-func (p *PollTicker) Interval() time.Duration { return p.d }
-
-func (p *PollTicker) Stop() { p.t.Stop() }
+// Idle waits while this stream is not the active codec.
+func (p *ReadPacer) Idle() { p.sleep(readIdleWait) }

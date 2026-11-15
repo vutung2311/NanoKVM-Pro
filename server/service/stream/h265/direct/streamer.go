@@ -49,21 +49,20 @@ func (s *Streamer) run() {
 		}
 	}()
 
-	ticker := stream.NewPollTicker()
-	defer ticker.Stop()
+	pacer := stream.NewReadPacer()
 
 	screen := common.GetScreen()
 	vision := common.GetKvmVision()
 	startTime := time.Now()
 
-	for range ticker.C() {
-		ticker.Refresh()
+	for {
 		if s.hub.Len() == 0 {
 			log.Debug("h265 stream stopped due to no clients")
 			return
 		}
 
 		if vision.StreamType != common.STREAM_TYPE_H265_DIRECT {
+			pacer.Idle()
 			continue
 		}
 
@@ -71,6 +70,7 @@ func (s *Streamer) run() {
 		// One copy: the encoder output goes straight into the message after
 		// its 9-byte header (see packFrame for the layout).
 		var msg *fanout.Msg
+		readStart := time.Now()
 		n, result := vision.ReadH265To(params.Width, params.Height, params.BitRate, func(n int) []byte {
 			msg = fanout.NewMsg(frameHeaderLen+n, false)
 			return msg.Data[frameHeaderLen:]
@@ -79,9 +79,11 @@ func (s *Streamer) run() {
 			if msg != nil {
 				msg.Release()
 			}
+			pacer.Missed(time.Since(readStart))
 			continue
 		}
 		writeFrameHeader(msg, result == 7, time.Since(startTime).Microseconds())
+		pacer.Got()
 		s.hub.Broadcast(msg)
 
 		stream.GetFrameRateCounter().Update()
