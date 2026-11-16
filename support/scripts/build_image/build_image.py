@@ -427,6 +427,10 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
             "/etc/systemd/system/multi-user.target.wants/cua.service "
             "/etc/systemd/system/multi-user.target.wants/wpa_supplicant.service "
             "/etc/systemd/system/dbus-fi.w1.wpa_supplicant1.service",
+            # networkd-dispatcher only reacts to systemd-networkd, which
+            # nothing here runs (ifplugd and wifi.sh manage the links): an
+            # 18 MB Python process that waits forever, 1.7 s of boot.
+            "rm -f /etc/systemd/system/multi-user.target.wants/networkd-dispatcher.service",
             "ln -sf /dev/null /etc/systemd/system/wpa_supplicant.service",
             "ln -sf /dev/null /etc/systemd/system/dbus-fi.w1.wpa_supplicant1.service",
             "sed -i '/allow-hotplug eth0/d' /etc/network/interfaces 2>/dev/null || true"

@@ -99,6 +99,19 @@ if [ -x /etc/rc.local ] && [ -x /kvmcomm/scripts/board_init.sh ]; then
     echo "kvmcomm: stopped running the vendor /etc/rc.local (board_init.sh does its work)"
 fi
 
+# networkd-dispatcher runs scripts on systemd-networkd state changes, but
+# nothing here runs systemd-networkd (ifplugd and wifi.sh manage the links),
+# so it is an 18 MB Python process that waits forever and adds 1.7 s to boot.
+# Disable it while systemd-networkd is off. Idempotent.
+if [ "$(systemctl is-enabled networkd-dispatcher.service 2>/dev/null)" = enabled ] &&
+    [ "$(systemctl is-enabled systemd-networkd.service 2>/dev/null)" != enabled ]; then
+    systemctl disable networkd-dispatcher.service >/dev/null 2>&1 || true
+    if [ -d /run/systemd/system ]; then
+        systemctl stop networkd-dispatcher.service >/dev/null 2>&1 || true
+    fi
+    echo "kvmcomm: disabled networkd-dispatcher.service (systemd-networkd is not used)"
+fi
+
 # Images built before the build scripts emptied /etc/machine-id shipped one
 # fixed id, shared by every device flashed from them (and with it the
 # systemd-derived eth0 MAC and DHCP identity). Give this device its own,

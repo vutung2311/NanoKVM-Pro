@@ -239,7 +239,7 @@ apt-get install -y --no-install-recommends \
     isc-dhcp-server language-pack-en-base htop bc udev ssh iputils-ping \
     python3 alsa-utils udhcpd wpasupplicant avahi-daemon chrony i2c-tools spi-tools \
     udhcpc hostapd rsync etherwake bluez evtest usbutils arping arp-scan zstd dosfstools \
-    e2fsprogs fdisk wireguard-tools iptables curl wget nano vim-tiny networkd-dispatcher cron dnsmasq-base xz-utils \
+    e2fsprogs fdisk wireguard-tools iptables curl wget nano vim-tiny cron dnsmasq-base xz-utils \
     ifplugd isc-dhcp-client
 
 # Set default root credentials and hostname
