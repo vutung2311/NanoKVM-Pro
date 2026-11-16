@@ -85,6 +85,20 @@ if [ -d /opt/swupdate/lib ] && [ -f /opt/swupdate/bin/fw_printenv ]; then
     done
 fi
 
+# Older images run the vendor /etc/rc.local through rc-local.service. Its
+# steps are all done by board_init.sh (kvm-board-init.service) with Jammy-safe
+# devmem/insmod wrappers; on Jammy the rc.local copies only fail (no devmem,
+# no libubootenv on the loader path), and its S99checkboot would arm the boot
+# slot from the U-Boot env instead of the hardware register kvmcomm.sh reads.
+# Keep the file but make it non-executable, so systemd's rc-local generator
+# no longer pulls the unit in. Takes effect from the next boot. Idempotent: a
+# non-executable rc.local is left alone.
+if [ -x /etc/rc.local ] && [ -x /kvmcomm/scripts/board_init.sh ]; then
+    chmod 0644 /etc/rc.local
+    rm -f /etc/systemd/system/multi-user.target.wants/rc-local.service
+    echo "kvmcomm: stopped running the vendor /etc/rc.local (board_init.sh does its work)"
+fi
+
 # Images built before the build scripts emptied /etc/machine-id shipped one
 # fixed id, shared by every device flashed from them (and with it the
 # systemd-derived eth0 MAC and DHCP identity). Give this device its own,

@@ -5,8 +5,9 @@
 # needs the touch driver and kvm_vin the ax_* drivers.
 # Ported from the vendor 1.0.15 image's /etc/rc.local.
 #
-# Every step must be safe to run twice: on vendor-base devices the vendor
-# /etc/rc.local runs the same steps before this unit does.
+# Every step must be safe to run twice: a vendor-base device may still run the
+# vendor /etc/rc.local, with the same steps, before this unit. Our images and
+# device_repairs.sh make that file non-executable, so it normally does not run.
 # No `set -e`: one failed step must not stop the rest.
 #
 # Left out on purpose:

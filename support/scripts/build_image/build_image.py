@@ -387,13 +387,16 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
             # every device flashed from it. nanokvm.sh generates a per-device
             # key on first start (makesure_https_crt).
             "rm -f /etc/kvm/server.key /etc/kvm/server.crt",
+            # Keep the vendor rc.local for reference but never run it:
+            # board_init.sh does its work, and its S99checkboot would arm the
+            # boot slot from the U-Boot env (see build_rootfs.sh). Not
+            # executable, so the rc-local generator leaves it out.
             '''if [ -f /etc/rc.local ]; then
                 sed -i '/192\\.168\\.100\\.200/d' /etc/rc.local
-                chmod 0755 /etc/rc.local
+                chmod 0644 /etc/rc.local
                 chown root:root /etc/rc.local
-                mkdir -p /etc/systemd/system/multi-user.target.wants
-                ln -sf /lib/systemd/system/rc-local.service /etc/systemd/system/multi-user.target.wants/rc-local.service
-            fi''',
+            fi
+            rm -f /etc/systemd/system/multi-user.target.wants/rc-local.service''',
             # fw_printenv/fw_setenv need the bundled libubootenv in
             # /opt/swupdate/lib, which is not on the loader path. A bare
             # symlink fails with "libubootenv.so.0: cannot open shared object

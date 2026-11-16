@@ -2,7 +2,8 @@
 Description=NanoKVM-Pro board init (drivers, rotary pinmux, NPU limit, OTA check)
 # Pulled in by kvmcomm.service's Wants=, not enabled with a symlink: a
 # firmware-pkg update can ship unit files but cannot create symlinks.
-# A vendor-base /etc/rc.local runs the same steps; never race it.
+# A vendor-base /etc/rc.local, if still executable, runs the same steps;
+# never race it (device_repairs.sh normally disables it).
 After=rc-local.service
 
 [Service]

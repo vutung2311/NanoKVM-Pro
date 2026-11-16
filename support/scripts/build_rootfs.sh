@@ -339,10 +339,15 @@ if [[ -d "${BLOBS_DIR}/rootfs" ]]; then
     echo -e "${CYAN}[+] Injecting proprietary Axera hardware blobs and drivers...${RESET}"
     ${PRIV_CMD} cp -a "${BLOBS_DIR}/rootfs/." "${WORK_DIR}/mnt/"
     ${PRIV_CMD} sed -i '/192\.168\.100\.200/d' "${WORK_DIR}/mnt/etc/rc.local" 2>/dev/null || true
-    ${PRIV_CMD} chmod 0755 "${WORK_DIR}/mnt/etc/rc.local" 2>/dev/null || true
+    # The vendor rc.local is kept for reference but never run: board_init.sh
+    # (kvm-board-init.service) does its work with Jammy-safe devmem/insmod
+    # wrappers, and its S99checkboot would arm the boot slot from the U-Boot
+    # env instead of the hardware register (see kvmcomm.sh). On Jammy it only
+    # fails (no devmem, no libubootenv on the loader path). Not executable, so
+    # systemd's rc-local generator does not pull rc-local.service in.
+    ${PRIV_CMD} chmod 0644 "${WORK_DIR}/mnt/etc/rc.local" 2>/dev/null || true
     ${PRIV_CMD} chown 0:0 "${WORK_DIR}/mnt/etc/rc.local" 2>/dev/null || true
-    ${PRIV_CMD} mkdir -p "${WORK_DIR}/mnt/etc/systemd/system/multi-user.target.wants"
-    ${PRIV_CMD} ln -sf /lib/systemd/system/rc-local.service "${WORK_DIR}/mnt/etc/systemd/system/multi-user.target.wants/rc-local.service"
+    ${PRIV_CMD} rm -f "${WORK_DIR}/mnt/etc/systemd/system/multi-user.target.wants/rc-local.service"
     # fw_printenv/fw_setenv need the bundled libubootenv in /opt/swupdate/lib. Use per-command
     # wrappers instead of /etc/ld.so.conf.d: that directory also carries vendor libcurl/libz,
     # which must not override the system copies for every other program.

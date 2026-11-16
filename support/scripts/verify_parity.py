@@ -198,6 +198,14 @@ class ParityAuditor:
                 "Stale 192.168.100.200 IP removed from /etc/rc.local",
                 "192.168.100.200" not in open(rc_local, errors="ignore").read()
             )
+            # board_init.sh does its work; its S99checkboot would arm the boot
+            # slot from the U-Boot env instead of the hardware register.
+            self.check(
+                "Vendor /etc/rc.local is not run (not executable, rc-local.service not enabled)",
+                not (os.stat(rc_local).st_mode & 0o111)
+                and not os.path.lexists(self.path("etc/systemd/system/multi-user.target.wants/rc-local.service")),
+                "rc-local.service would duplicate board_init.sh and run S99checkboot"
+            )
 
     def audit_wifi_subsystem(self):
         print("\n--- 5. Wi-Fi (AIC8800) Firmware & Automation ---")
