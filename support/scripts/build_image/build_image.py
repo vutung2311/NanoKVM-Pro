@@ -431,6 +431,11 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
             # nothing here runs (ifplugd and wifi.sh manage the links): an
             # 18 MB Python process that waits forever, 1.7 s of boot.
             "rm -f /etc/systemd/system/multi-user.target.wants/networkd-dispatcher.service",
+            # e2scrub checks ext4 filesystems on LVM volumes through LVM
+            # snapshots; there is no LVM here, so the weekly timer does
+            # nothing and e2scrub_reap only adds 1.8 s to boot.
+            "rm -f /etc/systemd/system/timers.target.wants/e2scrub_all.timer "
+            "/etc/systemd/system/multi-user.target.wants/e2scrub_reap.service",
             "ln -sf /dev/null /etc/systemd/system/wpa_supplicant.service",
             "ln -sf /dev/null /etc/systemd/system/dbus-fi.w1.wpa_supplicant1.service",
             "sed -i '/allow-hotplug eth0/d' /etc/network/interfaces 2>/dev/null || true"

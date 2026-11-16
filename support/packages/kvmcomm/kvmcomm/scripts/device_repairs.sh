@@ -112,6 +112,18 @@ if [ "$(systemctl is-enabled networkd-dispatcher.service 2>/dev/null)" = enabled
     echo "kvmcomm: disabled networkd-dispatcher.service (systemd-networkd is not used)"
 fi
 
+# e2scrub checks ext4 filesystems on LVM volumes through LVM snapshots, and
+# e2scrub_reap removes leftover snapshots at boot. Without LVM both do
+# nothing, and e2scrub_reap adds 1.8 s to boot. Disable them while LVM is
+# not installed. Idempotent.
+if ! command -v lvcreate >/dev/null 2>&1; then
+    for unit in e2scrub_all.timer e2scrub_reap.service; do
+        [ "$(systemctl is-enabled "$unit" 2>/dev/null)" = enabled ] || continue
+        systemctl disable "$unit" >/dev/null 2>&1 || true
+        echo "kvmcomm: disabled ${unit} (no LVM)"
+    done
+fi
+
 # Images built before the build scripts emptied /etc/machine-id shipped one
 # fixed id, shared by every device flashed from them (and with it the
 # systemd-derived eth0 MAC and DHCP identity). Give this device its own,
