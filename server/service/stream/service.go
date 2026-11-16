@@ -140,7 +140,7 @@ func (s *Service) SetFps(c *gin.Context) {
 	}
 
 	fps := uint8(req.Fps)
-	result := common.GetKvmVision().SetFps(fps)
+	result := GetFpsGovernor().SetTarget(fps)
 	if result < 0 {
 		log.Errorf("failed to set FPS: %d", result)
 		rsp.ErrRsp(c, -3, "set FPS failed")

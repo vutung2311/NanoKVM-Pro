@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"NanoKVM-Server/common"
+
 	log "github.com/sirupsen/logrus"
 )
 
@@ -192,6 +194,7 @@ func cloneReport(report []byte) []byte {
 // kept until the writer catches up, so the caller (the WebSocket reader) is
 // never stalled by a blocked device.
 func (h *Hid) SubmitKeyboard(report []byte) {
+	common.NoteInput()
 	h.startWriters()
 	enqueue(h.kbInbox, &h.kbOverflow, 0, hidMsg{report: cloneReport(report), at: time.Now()})
 }
@@ -201,6 +204,7 @@ func (h *Hid) SubmitKeyboard(report []byte) {
 // (ErrReportTimeout). The timeout covers queueing too: if the report could
 // not be queued in time it is not sent at all.
 func (h *Hid) SubmitKeyboardWait(report []byte, timeout time.Duration) error {
+	common.NoteInput()
 	h.startWriters()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -226,6 +230,7 @@ func (h *Hid) SubmitKeyboardWait(report []byte, timeout time.Duration) error {
 // SubmitMouse queues a relative (4/5-byte) or absolute (6/7-byte) mouse
 // report, with the same bounded wait as SubmitKeyboard.
 func (h *Hid) SubmitMouse(report []byte) {
+	common.NoteInput()
 	h.startWriters()
 	enqueue(h.mouseInbox, &h.mouseOverflow, mouseClass(report), hidMsg{report: cloneReport(report), at: time.Now()})
 }

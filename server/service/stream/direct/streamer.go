@@ -87,6 +87,7 @@ func (s *Streamer) run() {
 		s.hub.Broadcast(msg)
 
 		stream.GetFrameRateCounter().Update()
+		stream.GetFpsGovernor().NoteFrame(n, result == 3)
 	}
 }
 

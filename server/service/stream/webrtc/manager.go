@@ -145,6 +145,7 @@ func (m *WebRTCManager) sendVideoStream() {
 		}
 
 		stream.GetFrameRateCounter().Update()
+		stream.GetFpsGovernor().NoteFrame(len(data), result == 3)
 	}
 }
 
