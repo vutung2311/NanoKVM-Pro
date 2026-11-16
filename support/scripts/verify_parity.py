@@ -264,6 +264,16 @@ class ParityAuditor:
         fw_printenv = any(self.exists_in_root(f"{p}/fw_printenv") for p in ["usr/bin", "sbin", "bin", "opt/swupdate/bin"])
         self.check("U-Boot env tool fw_printenv available", fw_printenv)
 
+        # The vendor tools need /opt/swupdate/lib, which is not on the loader
+        # path: /usr/bin must hold the wrappers, not bare symlinks.
+        if os.path.isdir(self.path("opt/swupdate/lib")):
+            for tool in ["fw_printenv", "fw_setenv"]:
+                wrapper = self.path(f"usr/bin/{tool}")
+                ok = (os.path.isfile(wrapper) and not os.path.islink(wrapper)
+                      and "/opt/swupdate/lib" in open(wrapper, errors="ignore").read())
+                self.check(f"/usr/bin/{tool} sets the libubootenv path", ok,
+                           "A bare symlink fails to load libubootenv.so.0")
+
 
 def audit_from_image(image_path):
     """Mount ext4 or AXP image and run audit."""

@@ -394,9 +394,19 @@ def build_axp(axp_file=None, blobs_dir=None, rootfs_path=None, replacements=None
                 mkdir -p /etc/systemd/system/multi-user.target.wants
                 ln -sf /lib/systemd/system/rc-local.service /etc/systemd/system/multi-user.target.wants/rc-local.service
             fi''',
+            # fw_printenv/fw_setenv need the bundled libubootenv in
+            # /opt/swupdate/lib, which is not on the loader path. A bare
+            # symlink fails with "libubootenv.so.0: cannot open shared object
+            # file", so install the same wrappers build_rootfs.sh writes.
             '''if [ -f /opt/swupdate/bin/fw_printenv ]; then
-                ln -sf /opt/swupdate/bin/fw_printenv /usr/bin/fw_printenv
-                ln -sf fw_printenv /usr/bin/fw_setenv
+                # libubootenv's tool picks printenv/setenv mode from argv[0]
+                [ -e /opt/swupdate/bin/fw_setenv ] || ln -s fw_printenv /opt/swupdate/bin/fw_setenv
+                for tool in fw_printenv fw_setenv; do
+                    # rm first: writing through a symlink would clobber the vendor binary
+                    rm -f /usr/bin/$tool
+                    printf '#!/bin/sh\\nLD_LIBRARY_PATH=/opt/swupdate/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} exec /opt/swupdate/bin/%s "$@"\\n' "$tool" > /usr/bin/$tool
+                    chmod 0755 /usr/bin/$tool
+                done
             fi''',
             "ldconfig"
         ])

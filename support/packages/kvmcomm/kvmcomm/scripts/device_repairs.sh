@@ -60,6 +60,31 @@ if [ ! -e /etc/hostapd/hostapd.conf ] &&
     echo "kvmcomm: disabled hostapd.service (no /etc/hostapd/hostapd.conf; wifi.sh runs hostapd itself)"
 fi
 
+# fw_printenv/fw_setenv need the bundled libubootenv in /opt/swupdate/lib,
+# which is not on the loader path. Images built before build_image.py wrote
+# wrappers ship bare symlinks instead, so every call fails with
+# "libubootenv.so.0: cannot open shared object file" (S99checkota among
+# them). Replace such symlinks with the wrapper build_rootfs.sh installs.
+# Idempotent: a wrapper is a regular file and is left alone.
+if [ -d /opt/swupdate/lib ] && [ -f /opt/swupdate/bin/fw_printenv ]; then
+    for tool in fw_printenv fw_setenv; do
+        [ -L "/usr/bin/${tool}" ] || continue
+        case $(readlink "/usr/bin/${tool}") in
+            /opt/swupdate/bin/* | fw_printenv) ;;
+            *) continue ;; # someone else's link: leave it
+        esac
+        # libubootenv's tool picks printenv/setenv mode from argv[0]
+        [ -e /opt/swupdate/bin/fw_setenv ] || ln -s fw_printenv /opt/swupdate/bin/fw_setenv
+        tmp_tool=$(mktemp "/usr/bin/.${tool}.XXXXXX")
+        # shellcheck disable=SC2016 # expanded when the wrapper runs
+        printf '#!/bin/sh\nLD_LIBRARY_PATH=/opt/swupdate/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} exec /opt/swupdate/bin/%s "$@"\n' "$tool" >"$tmp_tool"
+        chmod 0755 "$tmp_tool"
+        # mv replaces the link itself, never the vendor binary it points to
+        mv -f "$tmp_tool" "/usr/bin/${tool}"
+        echo "kvmcomm: replaced the /usr/bin/${tool} symlink with a libubootenv wrapper"
+    done
+fi
+
 # Images built before the build scripts emptied /etc/machine-id shipped one
 # fixed id, shared by every device flashed from them (and with it the
 # systemd-derived eth0 MAC and DHCP identity). Give this device its own,
