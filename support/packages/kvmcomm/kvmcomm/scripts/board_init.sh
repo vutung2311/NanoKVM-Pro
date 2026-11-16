@@ -58,8 +58,22 @@ insmod() {
     "$(type -P insmod)" "$@"
 }
 
+# The vendor fw_printenv/fw_setenv need the bundled libubootenv in
+# /opt/swupdate/lib, which is not on the Jammy loader path. Call them with it
+# here instead of relying on /usr/bin: older images ship bare symlinks there,
+# which device_repairs.sh only replaces later in boot (from kvmcomm.sh, after
+# this unit), so S99checkota would fail on the first boot after an update.
+uboot_tool() {
+    local tool=$1 bin=/opt/swupdate/bin/$1
+    shift
+    [ -x "$bin" ] || bin=$(type -P "$tool") || return 127
+    LD_LIBRARY_PATH="/opt/swupdate/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$bin" "$@"
+}
+fw_printenv() { uboot_tool fw_printenv "$@"; }
+fw_setenv() { uboot_tool fw_setenv "$@"; }
+
 # Exported so the vendor scripts below, run through bash, use them too.
-export -f devmem insmod
+export -f devmem insmod uboot_tool fw_printenv fw_setenv
 
 # The vendor scripts use bash syntax behind #!/bin/sh, and /bin/sh is dash
 # on Jammy, so every one of them is run through bash explicitly.
