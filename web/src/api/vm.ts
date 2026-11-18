@@ -5,6 +5,11 @@ export function getInfo() {
   return http.get('/api/vm/info');
 }
 
+// get SoC temperature (°C)
+export function getTemperature() {
+  return http.get('/api/vm/temperature');
+}
+
 // get hardware information
 export function getHardware() {
   return http.get('/api/vm/hardware');

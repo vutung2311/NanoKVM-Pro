@@ -296,6 +296,7 @@ const en = {
         applicationTip: 'NanoKVM web application version',
         arch: 'Arch',
         device_number: 'Device Number',
+        temperature: 'Temperature',
         image: 'Image Version',
         imageTip: 'NanoKVM system image version',
         deviceKey: 'Device Key',

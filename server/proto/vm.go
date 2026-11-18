@@ -17,6 +17,10 @@ type GetInfoRsp struct {
 	Arch         string `json:"arch"`
 }
 
+type GetTemperatureRsp struct {
+	Temperature float64 `json:"temperature"` // SoC temperature, °C
+}
+
 type GetHardwareRsp struct {
 	Version string `json:"version"`
 }

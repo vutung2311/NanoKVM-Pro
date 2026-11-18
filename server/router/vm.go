@@ -12,8 +12,9 @@ func vmRouter(r *gin.Engine) {
 
 	api := r.Group("/api").Use(middleware.CheckToken())
 
-	api.GET("/vm/info", service.GetInfo)         // get device information
-	api.GET("/vm/hardware", service.GetHardware) // get hardware version
+	api.GET("/vm/info", service.GetInfo)               // get device information
+	api.GET("/vm/hardware", service.GetHardware)       // get hardware version
+	api.GET("/vm/temperature", service.GetTemperature) // get SoC temperature
 
 	api.POST("/vm/gpio", service.SetGpio) // update gpio
 	api.GET("/vm/gpio", service.GetGpio)  // get gpio

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Tooltip } from 'antd';
+import clsx from 'clsx';
 import { CircleHelpIcon, EthernetPortIcon, WifiIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -22,10 +23,18 @@ type Info = {
   arch: string;
 };
 
+// How often the SoC temperature is re-read while this panel is open.
+const TEMPERATURE_INTERVAL_MS = 3000;
+
+// The SoC starts throttling at its first thermal trip point (80 °C).
+const TEMPERATURE_WARM = 65;
+const TEMPERATURE_HOT = 80;
+
 export const Information = () => {
   const { t } = useTranslation();
 
   const [information, setInformation] = useState<Info>();
+  const [temperature, setTemperature] = useState<number>();
 
   useEffect(() => {
     api.getInfo().then((rsp: any) => {
@@ -36,6 +45,30 @@ export const Information = () => {
 
       setInformation(rsp.data);
     });
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    const update = () => {
+      api
+        .getTemperature()
+        .then((rsp: any) => {
+          if (!active) return;
+          setTemperature(rsp.code === 0 ? rsp.data?.temperature : undefined);
+        })
+        .catch(() => {
+          if (active) setTemperature(undefined);
+        });
+    };
+
+    update();
+    const timer = setInterval(update, TEMPERATURE_INTERVAL_MS);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, []);
 
   return (
@@ -105,6 +138,23 @@ export const Information = () => {
 
           <span>{information ? information.application : '-'}</span>
         </div>
+
+        {/* SoC temperature */}
+        {typeof temperature === 'number' && (
+          <div className="flex w-full items-center justify-between">
+            <span>{t('settings.about.temperature')}</span>
+            <span
+              className={clsx(
+                'tabular-nums',
+                temperature >= TEMPERATURE_HOT
+                  ? 'text-red-500'
+                  : temperature >= TEMPERATURE_WARM && 'text-amber-500'
+              )}
+            >
+              {temperature.toFixed(1)} °C
+            </span>
+          </div>
+        )}
 
         {/* device number （product number） */}
         {!!information?.pn && (

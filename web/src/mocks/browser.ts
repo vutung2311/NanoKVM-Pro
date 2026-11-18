@@ -91,6 +91,8 @@ function installMockApiAdapter() {
       data = { token: 'mocked_token' };
     } else if (url.includes('/api/vm/info')) {
       data = { ip: [{ name: 'eth0', addr: '192.168.1.88' }], mdns: 'nanokvm-mock.local' };
+    } else if (url.includes('/api/vm/temperature')) {
+      data = { temperature: 48.2 };
     } else if (url.includes('/api/vm/menubar')) {
       data = { disabledItems: [] };
     } else if (url.includes('/api/hid/shortcuts')) {
