@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- Grey test pattern for capture_levels.py. Open it full screen (F11) on the
+     host machine. Nine equal vertical bands, left to right, of these grey
+     levels; the script measures the middle of each band. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Capture levels</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; cursor: none; }
+  body { display: flex; }
+  div { flex: 1; }
+</style>
+</head>
+<body>
+<script>
+  for (const v of [0, 32, 64, 96, 128, 160, 192, 224, 255]) {
+    const d = document.createElement('div');
+    d.style.background = `rgb(${v},${v},${v})`;
+    document.body.appendChild(d);
+  }
+</script>
+</body>
+</html>
