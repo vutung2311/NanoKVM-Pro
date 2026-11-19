@@ -20,7 +20,8 @@ import (
 // at once: keyboard or mouse input (before the report reaches the host, so
 // the first changed frame is already captured at the full rate), or
 // busyFrames inter frames larger than busyFrameBytes within busyWindow (the
-// host changes the screen by itself, e.g. a video).
+// host changes the screen by itself, e.g. a video). MJPEG has no inter frames
+// to measure, so the MJPEG loop wakes the governor with every frame.
 //
 // One large frame is not enough: on an otherwise static desktop a blinking
 // cursor or a clock makes about one a second (measured: p50 442 B, p99

@@ -93,6 +93,9 @@ func (s *Streamer) run() {
 			continue
 		}
 		pacer.Got()
+		// MJPEG frames are all independent, so the governor cannot tell an
+		// idle screen from a busy one: keep the encoder at its full rate.
+		stream.GetFpsGovernor().Wake()
 		s.hub.Broadcast(msg)
 
 		stream.GetFrameRateCounter().Update()
