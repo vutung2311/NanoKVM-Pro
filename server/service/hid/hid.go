@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -33,6 +34,10 @@ type Hid struct {
 	mouseInbox    chan hidMsg
 	kbOverflow    overflowSlot
 	mouseOverflow overflowSlot
+
+	// Buttons of the latest submitted report, per mouseClass (relative,
+	// absolute). Read by the jiggler so it never releases a held button.
+	mouseButtons [2]atomic.Uint32
 }
 
 const (

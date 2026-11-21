@@ -153,6 +153,10 @@ func (j *Jiggler) GetMode() string {
 
 func move(mode string) {
 	h := hid.GetHid()
+	// Jiggle reports carry no buttons: sending one now would end a held drag.
+	if h.MouseButtonsHeld() {
+		return
+	}
 
 	if mode == "absolute" {
 		h.SubmitMouse([]byte{0x00, 0x00, 0x3f, 0x00, 0x3f, 0x00})

@@ -464,3 +464,24 @@ func TestOutboxesUseSubmitTimestamp(t *testing.T) {
 		t.Fatalf("mouse: got %+v, want only the fresh entry", m.entries)
 	}
 }
+
+func TestMouseButtonsHeldTracksLatestReport(t *testing.T) {
+	h := &Hid{}
+	h.SubmitMouse([]byte{1, 10, 0, 10, 0, 0}) // absolute press
+	if !h.MouseButtonsHeld() {
+		t.Fatal("absolute press not reported as held")
+	}
+	h.SubmitMouse([]byte{0, 1, 1, 0}) // relative report must not clear the absolute hold
+	if !h.MouseButtonsHeld() {
+		t.Fatal("relative report cleared the absolute hold")
+	}
+	h.SubmitMouse([]byte{0, 10, 0, 10, 0, 0}) // absolute release
+	if h.MouseButtonsHeld() {
+		t.Fatal("release still reported as held")
+	}
+	h.SubmitMouse([]byte{2, 0, 0, 0})
+	h.ReleaseMouse()
+	if h.MouseButtonsHeld() {
+		t.Fatal("ReleaseMouse left a button held")
+	}
+}

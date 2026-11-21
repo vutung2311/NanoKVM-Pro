@@ -232,6 +232,9 @@ func (h *Hid) SubmitKeyboardWait(report []byte, timeout time.Duration) error {
 func (h *Hid) SubmitMouse(report []byte) {
 	common.NoteInput()
 	h.startWriters()
+	if len(report) > 0 {
+		h.mouseButtons[mouseClass(report)].Store(uint32(report[0]))
+	}
 	enqueue(h.mouseInbox, &h.mouseOverflow, mouseClass(report), hidMsg{report: cloneReport(report), at: time.Now()})
 }
 
@@ -251,7 +254,15 @@ func (h *Hid) ReleaseKeyboard() {
 // ReleaseMouse queues a release of every held mouse button (both devices).
 func (h *Hid) ReleaseMouse() {
 	h.startWriters()
+	h.mouseButtons[0].Store(0)
+	h.mouseButtons[1].Store(0)
 	enqueue(h.mouseInbox, &h.mouseOverflow, 0, hidMsg{release: true, at: time.Now()})
+}
+
+// MouseButtonsHeld reports whether the latest submitted report of either
+// mouse device holds a button, e.g. a drag paused over its drop target.
+func (h *Hid) MouseButtonsHeld() bool {
+	return h.mouseButtons[0].Load() != 0 || h.mouseButtons[1].Load() != 0
 }
 
 // runWriter is the per-device delivery loop. It returns when inbox is closed.

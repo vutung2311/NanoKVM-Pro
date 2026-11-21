@@ -26,6 +26,12 @@ type mouseEntry struct {
 
 	abs [7]byte // absolute: buttons, x lo/hi, y lo/hi, wheel, hwheel
 
+	// transition marks a report whose buttons differ from the device's
+	// previous report. Later motion is never merged into it: the press (or
+	// release) must reach the host at its own position, before the motion
+	// that follows, or a drag starts where the pointer ended up.
+	transition bool
+
 	since time.Time // when this entry started waiting
 }
 
@@ -80,6 +86,7 @@ func parseMouseEvent(ev []byte, now time.Time) (mouseEntry, bool) {
 //   - relative, same buttons: deltas are summed
 //   - absolute, same buttons, no wheel on either: latest position wins
 //   - button change, mode switch, or absolute wheel tick: new entry
+//   - nothing is merged into a button change, so it keeps its own position
 func (o *mouseOutbox) add(msg hidMsg) {
 	if msg.release {
 		o.release(msg.at)
@@ -117,14 +124,16 @@ func (o *mouseOutbox) release(at time.Time) {
 
 func (o *mouseOutbox) addEntry(e mouseEntry, now time.Time) {
 	if e.absolute {
+		e.transition = e.buttons != o.lastAbs[0] // lastAbs is zero until known
 		o.lastAbs, o.absKnown = e.abs, true
 	} else {
+		e.transition = e.buttons != o.relButtons
 		o.relButtons = e.buttons
 	}
 
 	if n := len(o.entries); n > 0 {
 		last := &o.entries[n-1]
-		if last.absolute == e.absolute && last.buttons == e.buttons {
+		if last.absolute == e.absolute && last.buttons == e.buttons && !last.transition {
 			if !e.absolute {
 				last.dx += e.dx
 				last.dy += e.dy

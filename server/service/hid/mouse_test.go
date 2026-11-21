@@ -461,3 +461,56 @@ func TestMouseDropStaleKeepsOtherDeviceState(t *testing.T) {
 		t.Fatalf("second entry %+v is not the fresh relative move", o.entries[1])
 	}
 }
+
+// A drag must reach the host as press-at-start, then motion. Merging the
+// following moves into the press entry would move the press to the end of
+// the backlog, so the host never sees the button go down where it started.
+func TestMouseAbsoluteDragKeepsPressPosition(t *testing.T) {
+	r, w := newPipe(t)
+	h := &Hid{g2: w}
+	queue := make(chan []byte, 10)
+
+	queue <- []byte{0, 10, 0, 10, 0, 0, 0} // hover at (10,10)
+	queue <- []byte{1, 10, 0, 10, 0, 0, 0} // press at (10,10)
+	queue <- []byte{1, 20, 0, 20, 0, 0, 0} // drag
+	queue <- []byte{1, 30, 0, 30, 0, 0, 0} // drag
+	queue <- []byte{0, 30, 0, 30, 0, 0, 0} // release at (30,30)
+	close(queue)
+
+	runMouse(h, queue)
+	_ = w.Close()
+
+	want := []byte{
+		0, 10, 0, 10, 0, 0, 0,
+		1, 10, 0, 10, 0, 0, 0, // press stays at the start point
+		1, 30, 0, 30, 0, 0, 0, // drag motion (coalesced)
+		0, 30, 0, 30, 0, 0, 0,
+	}
+	if got := readExactly(t, r, len(want)); string(got) != string(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestMouseRelativeDragKeepsPressBeforeMotion(t *testing.T) {
+	r, w := newPipe(t)
+	h := &Hid{g1: w}
+	queue := make(chan []byte, 10)
+
+	queue <- []byte{1, 0, 0, 0, 0}  // press
+	queue <- []byte{1, 10, 5, 0, 0} // drag
+	queue <- []byte{1, 10, 5, 0, 0} // drag
+	queue <- []byte{0, 0, 0, 0, 0}  // release
+	close(queue)
+
+	runMouse(h, queue)
+	_ = w.Close()
+
+	want := []byte{
+		1, 0, 0, 0, 0, // press with no motion
+		1, 20, 10, 0, 0, // drag motion (coalesced)
+		0, 0, 0, 0, 0,
+	}
+	if got := readExactly(t, r, len(want)); string(got) != string(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
