@@ -1,21 +1,25 @@
 import { useEffect, useState } from 'react';
 import { Divider, Popover } from 'antd';
+import { useAtom } from 'jotai';
 import { CommandIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import * as api from '@/api/hid.ts';
+import { shortcutsAtom } from '@/jotai/keyboard.ts';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 import { Recorder } from './recorder.tsx';
 import { Shortcut } from './shortcut.tsx';
-import type { Shortcut as ShortcutInterface } from './types.ts';
+import { DEFAULT_PASTE_SHORTCUT, type Shortcut as ShortcutInterface } from './types.ts';
 
 export const Shortcuts = () => {
   const { t } = useTranslation();
 
   const [isOpen, setIsOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const [customShortcuts, setCustomShortcuts] = useState<ShortcutInterface[]>([]);
+  const [customShortcuts, setCustomShortcuts] = useAtom(shortcutsAtom);
+
+  const hasCustomPasteShortcut = customShortcuts.some((shortcut) => shortcut.tag === 'paste');
 
   const defaultShortcuts: ShortcutInterface[] = [
     {
@@ -30,7 +34,8 @@ export const Shortcuts = () => {
         { code: 'AltLeft', label: 'Alt' },
         { code: 'Delete', label: '⌫' }
       ]
-    }
+    },
+    ...(hasCustomPasteShortcut ? [] : [DEFAULT_PASTE_SHORTCUT])
   ];
 
   useEffect(() => {
@@ -55,7 +60,7 @@ export const Shortcuts = () => {
 
   async function addShortcut(shortcut: ShortcutInterface) {
     try {
-      const rsp = await api.addShortcut(shortcut.keys);
+      const rsp = await api.addShortcut(shortcut.keys, shortcut.tag);
       if (rsp.code !== 0) {
         console.log(rsp.msg);
         return;

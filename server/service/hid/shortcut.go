@@ -47,7 +47,7 @@ func (s *Service) AddShortcut(c *gin.Context) {
 		return
 	}
 
-	shortcut, err := addShortcut(req.Keys)
+	shortcut, err := addShortcut(req.Keys, req.Tag)
 	if err != nil {
 		log.Errorf("failed to add shortcut: %v", err)
 		rsp.ErrRsp(c, -2, "add shortcut failed")
@@ -121,7 +121,7 @@ func listShortcuts() ([]proto.Shortcut, error) {
 	return store.Shortcuts, nil
 }
 
-func addShortcut(keys []proto.ShortcutKey) (*proto.Shortcut, error) {
+func addShortcut(keys []proto.ShortcutKey, tag string) (*proto.Shortcut, error) {
 	shortcutMutex.Lock()
 	defer shortcutMutex.Unlock()
 
@@ -133,6 +133,7 @@ func addShortcut(keys []proto.ShortcutKey) (*proto.Shortcut, error) {
 	shortcut := proto.Shortcut{
 		ID:   uuid.New().String(),
 		Keys: keys,
+		Tag:  tag,
 	}
 
 	store.Shortcuts = append(store.Shortcuts, shortcut)

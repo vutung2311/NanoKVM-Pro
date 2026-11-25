@@ -111,7 +111,25 @@ const zh = {
         clear: '清空',
         save: '保存',
         captureTips: '捕获系统级按键（如 Windows 键）需要全屏权限。',
-        enterFullScreen: '切换全屏模式。'
+        enterFullScreen: '切换全屏模式。',
+        pasteTag: 'paste',
+        pasteTagOption: '标记为粘贴快捷键 (paste)',
+        pasteTagDesc: '按下时直接读取本地剪贴板并发送到主机，无需打开弹窗。',
+        requestClipboard: '请求剪贴板权限',
+        permission: {
+          granted: '剪贴板权限: 已授权',
+          prompt: '剪贴板权限: 待询问',
+          denied: '剪贴板权限: 已拒绝',
+          unsupported: '剪贴板权限: 需 HTTPS'
+        },
+        clipboardUnsupported: '读取剪贴板需要 HTTPS 或 localhost 环境。',
+        clipboardGranted: '已授予剪贴板访问权限。',
+        clipboardDenied: '剪贴板访问权限被拒绝，请在浏览器设置中允许读取剪贴板。',
+        clipboardReadFailed: '读取剪贴板失败。',
+        clipboardEmpty: '剪贴板为空。',
+        clipboardTooLong: '剪贴板内容超过 {{max}} 个字符限制。',
+        pasteSuccess: '已从剪贴板粘贴。',
+        pasteFailed: '剪贴板粘贴失败。'
       },
       leaderKey: {
         title: '引导键',

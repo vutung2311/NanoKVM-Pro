@@ -128,7 +128,25 @@ const en = {
         save: 'Save',
         captureTips:
           'Capturing system-level keys (such as the Windows key) requires full-screen permission.',
-        enterFullScreen: 'Toggle full-screen mode.'
+        enterFullScreen: 'Toggle full-screen mode.',
+        pasteTag: 'paste',
+        pasteTagOption: 'Tag as Paste shortcut (paste)',
+        pasteTagDesc: 'Reads client clipboard and pastes directly without opening a dialog.',
+        requestClipboard: 'Request Clipboard Permission',
+        permission: {
+          granted: 'Clipboard: Granted',
+          prompt: 'Clipboard: Prompt',
+          denied: 'Clipboard: Denied',
+          unsupported: 'Clipboard: Requires HTTPS'
+        },
+        clipboardUnsupported: 'Clipboard access requires HTTPS or localhost.',
+        clipboardGranted: 'Clipboard permission granted.',
+        clipboardDenied: 'Clipboard permission denied. Please allow clipboard access in browser settings.',
+        clipboardReadFailed: 'Failed to read clipboard.',
+        clipboardEmpty: 'Clipboard is empty.',
+        clipboardTooLong: 'Clipboard content exceeds {{max}} characters.',
+        pasteSuccess: 'Pasted from clipboard.',
+        pasteFailed: 'Failed to paste from clipboard.'
       },
       leaderKey: {
         title: 'Leader Key',

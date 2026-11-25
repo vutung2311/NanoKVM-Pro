@@ -29,10 +29,8 @@ export function getShortcuts() {
 }
 
 // add shortcut
-export function addShortcut(keys: any[]) {
-  const data = {
-    keys
-  };
+export function addShortcut(keys: any[], tag?: string) {
+  const data = tag ? { keys, tag } : { keys };
   return http.post('/api/hid/shortcut', data);
 }
 

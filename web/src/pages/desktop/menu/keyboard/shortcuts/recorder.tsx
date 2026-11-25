@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Divider, Input, InputRef, Modal } from 'antd';
+import { Button, Checkbox, Divider, Input, InputRef, Modal, Tag } from 'antd';
 import { useSetAtom } from 'jotai';
-import { KeyboardIcon, Trash2Icon } from 'lucide-react';
+import { ClipboardCheckIcon, KeyboardIcon, Trash2Icon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  ClipboardPermissionState,
+  getClipboardPermissionState,
+  requestClipboardPermission
+} from '@/lib/clipboard.ts';
 import { isModifier } from '@/lib/keymap.ts';
 import { isKeyboardEnableAtom } from '@/jotai/keyboard.ts';
 import { Kbd, KbdGroup } from '@/components/ui/kbd.tsx';
@@ -65,6 +70,9 @@ export const Recorder = ({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [shortcutLabel, setShortcutLabel] = useState('');
+  const [isPasteTag, setIsPasteTag] = useState(false);
+  const [clipboardPermission, setClipboardPermission] =
+    useState<ClipboardPermissionState>('prompt');
 
   const inputRef = useRef<InputRef | null>(null);
   const recordedKeysRef = useRef<KeyInfo[]>([]);
@@ -74,6 +82,8 @@ export const Recorder = ({
     setIsRecording(isModalOpen);
 
     if (!isModalOpen) return;
+
+    void getClipboardPermissionState().then(setClipboardPermission);
 
     const timer = setTimeout(() => {
       inputRef.current?.focus();
@@ -156,10 +166,14 @@ export const Recorder = ({
 
   function saveShortcut() {
     if (recordedKeysRef.current.length > 0) {
-      addShortcut({ keys: recordedKeysRef.current });
+      addShortcut({
+        keys: recordedKeysRef.current,
+        tag: isPasteTag ? 'paste' : undefined
+      });
     }
 
     clearShortcut();
+    setIsPasteTag(false);
   }
 
   function clearShortcut() {
@@ -167,8 +181,14 @@ export const Recorder = ({
     recordedKeysRef.current = [];
   }
 
+  async function handleRequestClipboardPermission() {
+    const state = await requestClipboardPermission(t);
+    setClipboardPermission(state);
+  }
+
   function closeModal() {
     clearShortcut();
+    setIsPasteTag(false);
     setIsModalOpen(false);
   }
 
@@ -208,7 +228,7 @@ export const Recorder = ({
           </a>
         </div>
 
-        <div className="flex items-center space-x-0.5 py-6">
+        <div className="flex items-center space-x-0.5 pt-6 pb-3">
           <Input
             ref={inputRef}
             placeholder={t('keyboard.shortcut.capture')}
@@ -219,6 +239,44 @@ export const Recorder = ({
           />
 
           <Button onClick={clearShortcut}>{t('keyboard.shortcut.clear')}</Button>
+        </div>
+
+        <div className="flex flex-col space-y-2 pb-5">
+          <div className="flex items-center justify-between">
+            <Checkbox checked={isPasteTag} onChange={(e) => setIsPasteTag(e.target.checked)}>
+              {t('keyboard.shortcut.pasteTagOption')}
+            </Checkbox>
+
+            {isPasteTag && (
+              <Tag
+                color={
+                  clipboardPermission === 'granted'
+                    ? 'green'
+                    : clipboardPermission === 'denied' || clipboardPermission === 'unsupported'
+                      ? 'red'
+                      : 'gold'
+                }
+                style={{ marginInlineEnd: 0 }}
+              >
+                {t(`keyboard.shortcut.permission.${clipboardPermission}`)}
+              </Tag>
+            )}
+          </div>
+
+          {isPasteTag && (
+            <div className="box-border flex items-center justify-between gap-3 rounded bg-neutral-800/60 px-3 py-2 text-xs text-neutral-400">
+              <span>{t('keyboard.shortcut.pasteTagDesc')}</span>
+              <Button
+                size="small"
+                className="shrink-0"
+                icon={<ClipboardCheckIcon size={14} />}
+                disabled={clipboardPermission === 'unsupported'}
+                onClick={handleRequestClipboardPermission}
+              >
+                {t('keyboard.shortcut.requestClipboard')}
+              </Button>
+            </div>
+          )}
         </div>
 
         <div className="flex w-full justify-center pb-3">
@@ -235,7 +293,7 @@ export const Recorder = ({
               {shortcuts.map((shortcut) => (
                 <div
                   key={shortcut.id}
-                  className="flex items-center justify-between rounded p-2 hover:bg-neutral-700/50"
+                  className="box-border flex items-center justify-between gap-2 rounded p-2 hover:bg-neutral-700/50"
                 >
                   <div className="flex items-center space-x-1">
                     {shortcut.keys.map((key, index) => (
@@ -243,6 +301,11 @@ export const Recorder = ({
                         <Kbd>{key.label}</Kbd>
                       </KbdGroup>
                     ))}
+                    {shortcut.tag === 'paste' && (
+                      <Tag color="blue" style={{ marginInlineEnd: 0 }} className="ml-2 shrink-0 text-xs">
+                        {t('keyboard.shortcut.pasteTag')}
+                      </Tag>
+                    )}
                   </div>
 
                   <div

@@ -1,26 +1,56 @@
 import { useEffect, useRef } from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { useTranslation } from 'react-i18next';
 
+import * as api from '@/api/hid.ts';
 import { getOperatingSystem } from '@/lib/browser.ts';
+import { pasteFromClipboard } from '@/lib/clipboard.ts';
 import { KeyboardReport } from '@/lib/keyboard.ts';
 import { isModifier } from '@/lib/keymap';
 import { client, MessageEvent } from '@/lib/websocket.ts';
-import { isCapsLockActiveAtom, isKeyboardEnableAtom } from '@/jotai/keyboard.ts';
+import { isCapsLockActiveAtom, isKeyboardEnableAtom, shortcutsAtom } from '@/jotai/keyboard.ts';
+import { DEFAULT_PASTE_SHORTCUT } from '@/pages/desktop/menu/keyboard/shortcuts/types.ts';
 
 import { Recorder } from './recorder.tsx';
 import { useAltGr } from './useAltGr.ts';
 import { useLeaderKey } from './useLeaderKey.ts';
 import { normalizeKeyCode } from './utils.ts';
 
+function normalizeShortcutCode(code: string): string {
+  if (code === 'ControlLeft' || code === 'ControlRight') return 'Control';
+  if (code === 'ShiftLeft' || code === 'ShiftRight') return 'Shift';
+  if (code === 'AltLeft' || code === 'AltRight') return 'Alt';
+  if (code === 'MetaLeft' || code === 'MetaRight') return 'Meta';
+  return code;
+}
+
 export const Keyboard = () => {
+  const { t } = useTranslation();
   const os = getOperatingSystem();
 
   const isKeyboardEnabled = useAtomValue(isKeyboardEnableAtom);
   const setIsCapsLockActive = useSetAtom(isCapsLockActiveAtom);
+  const [shortcuts, setShortcuts] = useAtom(shortcutsAtom);
 
   const keyboardRef = useRef(new KeyboardReport());
   const pressedKeys = useRef(new Set<string>());
+  const suppressedKeysRef = useRef(new Set<string>());
+  const shortcutsRef = useRef(shortcuts);
+  shortcutsRef.current = shortcuts;
   const isComposing = useRef(false);
+
+  useEffect(() => {
+    api
+      .getShortcuts()
+      .then((rsp: any) => {
+        if (rsp.code === 0 && Array.isArray(rsp.data?.shortcuts)) {
+          setShortcuts(rsp.data.shortcuts);
+        }
+      })
+      .catch((err) => {
+        console.log(err);
+      });
+  }, [setShortcuts]);
 
   // Send key event helper
   const sendKeyEvent = (type: 'keydown' | 'keyup', code: string) => {
@@ -40,6 +70,8 @@ export const Keyboard = () => {
   altGrRef.current = altGr;
 
   useEffect(() => {
+    const suppressedKeys = suppressedKeysRef.current;
+
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('keyup', handleKeyUp);
     document.addEventListener('compositionstart', handleCompositionStart);
@@ -60,10 +92,40 @@ export const Keyboard = () => {
 
       const code = normalizeKeyCode(os, event);
       if (!code || pressedKeys.current.has(code)) return;
+      if (event.repeat && suppressedKeysRef.current.has(code)) return;
+      suppressedKeysRef.current.delete(code);
 
       // Handle leader key
       const leaderHandled = leaderKeyRef.current.handleKeyDown(code);
       if (leaderHandled) {
+        return;
+      }
+
+      // Intercept client-side paste shortcut
+      const customPasteShortcuts = shortcutsRef.current.filter(
+        (shortcut) => shortcut.tag === 'paste' && shortcut.keys.length > 0
+      );
+      const activePasteShortcuts =
+        customPasteShortcuts.length > 0 ? customPasteShortcuts : [DEFAULT_PASTE_SHORTCUT];
+
+      const candidateCodes = new Set(pressedKeys.current);
+      candidateCodes.add(code);
+      const candidateNormalized = new Set(Array.from(candidateCodes, normalizeShortcutCode));
+
+      const matchedPasteShortcut = activePasteShortcuts.find((shortcut) => {
+        const shortcutNormalized = new Set(
+          shortcut.keys.map((k) => normalizeShortcutCode(k.code))
+        );
+        if (shortcutNormalized.size !== candidateNormalized.size) return false;
+        return Array.from(shortcutNormalized).every((k) => candidateNormalized.has(k));
+      });
+      if (matchedPasteShortcut) {
+        pressedKeys.current.forEach((pressedCode) => {
+          suppressedKeysRef.current.add(pressedCode);
+        });
+        suppressedKeysRef.current.add(code);
+        releaseKeys();
+        void pasteFromClipboard(t);
         return;
       }
 
@@ -87,6 +149,18 @@ export const Keyboard = () => {
 
       const code = normalizeKeyCode(os, event);
       if (!code) return;
+
+      if (suppressedKeysRef.current.has(code)) {
+        suppressedKeysRef.current.delete(code);
+        if (code === 'MetaLeft' || code === 'MetaRight') {
+          for (const key of Array.from(suppressedKeysRef.current)) {
+            if (!isModifier(key)) {
+              suppressedKeysRef.current.delete(key);
+            }
+          }
+        }
+        return;
+      }
 
       // Handle leader key release
       const leaderHandled = leaderKeyRef.current.handleKeyUp(code);
@@ -118,11 +192,13 @@ export const Keyboard = () => {
     }
 
     function handleBlur() {
+      suppressedKeys.clear();
       releaseKeys();
     }
 
     function handleVisibilityChange() {
       if (document.hidden) {
+        suppressedKeys.clear();
         releaseKeys();
       }
     }
@@ -156,6 +232,7 @@ export const Keyboard = () => {
       window.removeEventListener('blur', handleBlur);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
 
+      suppressedKeys.clear();
       releaseKeys();
     };
   }, [isKeyboardEnabled]);

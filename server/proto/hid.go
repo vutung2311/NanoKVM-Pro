@@ -16,6 +16,7 @@ type ShortcutKey struct {
 type Shortcut struct {
 	ID   string        `json:"id"`
 	Keys []ShortcutKey `json:"keys"`
+	Tag  string        `json:"tag,omitempty"`
 }
 
 type GetShortcutsRsp struct {
@@ -24,6 +25,7 @@ type GetShortcutsRsp struct {
 
 type AddShortcutReq struct {
 	Keys []ShortcutKey `validate:"required"`
+	Tag  string        `json:"tag" validate:"omitempty"`
 }
 
 type DeleteShortcutReq struct {
